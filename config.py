@@ -1,6 +1,8 @@
 # config.py
 import os
 import influxdb_client
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 # Optional: Load from a .env file if you use python-dotenv
 # from dotenv import load_dotenv
@@ -17,3 +19,15 @@ client = influxdb_client.InfluxDBClient(
     token=INFLUX_TOKEN,
     org=INFLUX_ORG
 )
+
+POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "your_password")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "your_db_name")
+
+DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+
+# Create SQLAlchemy engine and session maker
+pg_engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=pg_engine)
