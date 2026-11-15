@@ -110,6 +110,10 @@ def build_conditions(series: dict, climate: Optional[dict], texture: Optional[st
     precip = [v for v in meteo.get("precip_mm", []) if v is not None]
     conditions["precip_anual_mm"] = sum(precip) * 365 / len(precip) if len(precip) > 300 else None
     conditions["fuentes"]["precip_anual_mm"] = "meteomatics" if conditions["precip_anual_mm"] is not None else None
+    # Series diarias de lluvia y radiación (solo Meteomatics) para el modelo entrenado.
+    nan_series = [None] * len(days)
+    conditions["precip_mm"] = np.array([np.nan if v is None else v for v in meteo.get("precip_mm", nan_series)], dtype=float)
+    conditions["radiacion_mj"] = np.array([np.nan if v is None else v / 1e6 for v in meteo.get("radiacion_j", nan_series)], dtype=float)
     conditions["horas_frio"] = climate["horas_frio"] if climate is not None else None
     conditions["fuentes"]["horas_frio"] = "meteomatics" if climate is not None else None
 
@@ -149,6 +153,66 @@ def _summary(conditions: dict) -> dict:
     }
 
 
+def country_of(cliente_id: str, pais: Optional[str] = None) -> str:
+    """Código de país de Eurostat: el pedido o el del cliente."""
+    country = (pais or CLIENTE_PAIS.get(cliente_id, PAIS_POR_DEFECTO)).upper()
+    if not country.isalpha() or len(country) != 2:
+        raise ValueError("pais debe ser un código de dos letras (ES, IE, NO...)")
+    return country
+
+
+def zone_conditions(cliente_id: str, n: int, balizas: Optional[list[str]], start: str, start_zonas: str,
+                    regadio: bool) -> tuple:
+    """
+    Parte las balizas en zonas y junta las condiciones de cada una.
+
+    Returns (zonas, balizas registradas por id, meteomatics_ok), con cada zona
+    {"balizas": [ids], "centro": {latitud, longitud}, "textura": str|None,
+     "series": get_zone_series, "conditions": build_conditions}.
+    meteomatics_ok es None si no hay balizas.
+    """
+    registered = {b["id"]: b for b in retrieve_balizas_basic_info(cliente_id)}
+    if balizas:
+        unknown = sorted(set(balizas) - set(registered))
+        if unknown:
+            raise ValueError(f"balizas que no son del cliente: {', '.join(unknown)}")
+        chosen = [registered[b] for b in sorted(set(balizas))]
+    else:
+        chosen = list(registered.values())
+    chosen = [b for b in chosen if b["latitud"] is not None and b["longitud"] is not None]
+    if not chosen:
+        return [], registered, None
+
+    groups = split_zones(cliente_id, chosen, n, start_zonas)
+    centers = []
+    for ids in groups:
+        lats = [float(registered[b]["latitud"]) for b in ids]
+        lons = [float(registered[b]["longitud"]) for b in ids]
+        centers.append((sum(lats) / len(lats), sum(lons) / len(lons)))
+
+    try:
+        climates = get_climate_year(centers)
+        meteomatics_ok = True
+    except MeteomaticsError as e:
+        logger.warning("Sin datos de Meteomatics: %s", e)
+        climates = [None] * len(groups)
+        meteomatics_ok = False
+
+    zones = []
+    for ids, center, climate in zip(groups, centers, climates):
+        textures = Counter(registered[b]["textura_suelo"] for b in ids if registered[b]["textura_suelo"])
+        texture = textures.most_common(1)[0][0] if textures else None
+        series = get_zone_series(cliente_id, ids, start=start)
+        zones.append({
+            "balizas": ids,
+            "centro": {"latitud": round(center[0], 6), "longitud": round(center[1], 6)},
+            "textura": texture,
+            "series": series,
+            "conditions": build_conditions(series, climate, texture, regadio),
+        })
+    return zones, registered, meteomatics_ok
+
+
 def get_suitability(cliente_id: str, n: int = 1, balizas: Optional[list[str]] = None,
                     start: str = "-365d", start_zonas: str = "-24h", cultivos: Optional[list[int]] = None,
                     top: Optional[int] = 10, regadio: bool = False, orden: str = "idoneidad",
@@ -171,9 +235,7 @@ def get_suitability(cliente_id: str, n: int = 1, balizas: Optional[list[str]] = 
         raise ValueError("orden debe ser idoneidad o ingreso")
     if min_porcentaje is None:
         min_porcentaje = DEFAULT_MIN_PERCENT_BY_INCOME if orden == "ingreso" else 0.0
-    country = (pais or CLIENTE_PAIS.get(cliente_id, PAIS_POR_DEFECTO)).upper()
-    if not country.isalpha() or len(country) != 2:
-        raise ValueError("pais debe ser un código de dos letras (ES, IE, NO...)")
+    country = country_of(cliente_id, pais)
     eurostat = {"ok": True}
 
     def with_economics(score: dict) -> dict:
@@ -189,46 +251,19 @@ def get_suitability(cliente_id: str, n: int = 1, balizas: Optional[list[str]] = 
     def income(score: dict) -> float:
         economics = score["economia"]
         return -1.0 if not economics or economics["ingreso_esperado_eur_ha"] is None else economics["ingreso_esperado_eur_ha"]
-    registered = {b["id"]: b for b in retrieve_balizas_basic_info(cliente_id)}
-    if balizas:
-        unknown = sorted(set(balizas) - set(registered))
-        if unknown:
-            raise ValueError(f"balizas que no son del cliente: {', '.join(unknown)}")
-        chosen = [registered[b] for b in sorted(set(balizas))]
-    else:
-        chosen = list(registered.values())
-    chosen = [b for b in chosen if b["latitud"] is not None and b["longitud"] is not None]
-    if not chosen:
+
+    zones, registered, meteomatics_ok = zone_conditions(cliente_id, n, balizas, start, start_zonas, regadio)
+    if not zones:
         return {"meteomatics_disponible": None, "eurostat_disponible": None, "pais": country,
                 "orden": orden, "zonas": []}
-
-    zones = split_zones(cliente_id, chosen, n, start_zonas)
-
-    centers = []
-    for ids in zones:
-        lats = [float(registered[b]["latitud"]) for b in ids]
-        lons = [float(registered[b]["longitud"]) for b in ids]
-        centers.append((sum(lats) / len(lats), sum(lons) / len(lons)))
-
-    try:
-        climates = get_climate_year(centers)
-        meteomatics_ok = True
-    except MeteomaticsError as e:
-        logger.warning("Sin datos de Meteomatics: %s", e)
-        climates = [None] * len(zones)
-        meteomatics_ok = False
 
     all_crops = retrieve_crops_data()
     crops_by_id = {c["id"]: c for c in all_crops}
     crops = [c for c in all_crops if c["id"] in set(cultivos)] if cultivos else all_crops
 
     result = []
-    for label, (ids, center, climate) in enumerate(zip(zones, centers, climates)):
-        textures = Counter(registered[b]["textura_suelo"] for b in ids if registered[b]["textura_suelo"])
-        texture = textures.most_common(1)[0][0] if textures else None
-
-        series = get_zone_series(cliente_id, ids, start=start)
-        conditions = build_conditions(series, climate, texture, regadio)
+    for label, zone in enumerate(zones):
+        ids, texture, series, conditions = zone["balizas"], zone["textura"], zone["series"], zone["conditions"]
         scores = [with_economics(evaluate_crop(crop, conditions)) for crop in crops]
         scores.sort(key=lambda s: -1 if s["porcentaje"] is None else s["porcentaje"], reverse=True)
 
@@ -253,7 +288,7 @@ def get_suitability(cliente_id: str, n: int = 1, balizas: Optional[list[str]] = 
         result.append({
             "zona": label,
             "balizas": ids,
-            "centro": {"latitud": round(center[0], 6), "longitud": round(center[1], 6)},
+            "centro": zone["centro"],
             "textura_suelo": texture,
             "horas_influx": series["horas"],
             "condiciones": _summary(conditions),

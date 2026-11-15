@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from endpoints.balizas import create_baliza, retrieve_balizas_basic_info
 from endpoints.crops import retrieve_crops_basic_info, retrieve_crops_data
 from graph.idoneidad import get_suitability
+from graph.recomendacion import get_recommendation
 from realtime import MonitorHub
 
 app = FastAPI()
@@ -179,6 +180,32 @@ def get_idoneidad(n: int = 1, balizas: Optional[str] = None, start: str = "-365d
         data = get_suitability(session["cliente_id"], n=n, balizas=baliza_ids, start=start,
                                start_zonas=start_zonas, cultivos=cultivo_ids, top=top, regadio=regadio,
                                orden=orden, min_porcentaje=min_porcentaje, pais=pais)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"status": "success", **data}
+
+
+@app.get("/recomendacion")
+def get_recomendacion(n: int = 1, balizas: Optional[str] = None, start: str = "-365d",
+                      start_zonas: str = "-24h", top: int = 10, orden: str = "ingreso",
+                      pais: Optional[str] = None, session: dict = Depends(current_session)):
+    """
+    Cultivos recomendados por zona con el modelo entrenado (Eurostat + NASA POWER,
+    modelo_predicciones/modelo_europa.py): probabilidad de que el cultivo se dé con
+    el clima de la zona, rendimiento previsto e ingreso por hectárea con el precio
+    de venta de Eurostat.
+
+    - balizas, n, start, start_zonas: como en /idoneidad.
+    - orden: "ingreso" (probabilidad × rendimiento × precio, por defecto) o "probabilidad".
+    - top: cultivos por zona (0 = todos los del modelo).
+    - pais: código de Eurostat para los precios (por defecto, el del cliente).
+    """
+    try:
+        baliza_ids = [b.strip() for b in balizas.split(",") if b.strip()] if balizas else None
+        if n < 1:
+            raise ValueError("n debe ser al menos 1")
+        data = get_recommendation(session["cliente_id"], n=n, balizas=baliza_ids, start=start,
+                                  start_zonas=start_zonas, top=top, orden=orden, pais=pais)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     return {"status": "success", **data}

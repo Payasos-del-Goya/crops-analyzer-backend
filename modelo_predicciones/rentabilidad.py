@@ -80,6 +80,14 @@ EUROSTAT_CODES = {
 }
 
 
+def crop_price(crop_id, country: str) -> Optional[dict]:
+    """Precio de venta {valor €/t, codigo, fuente} de un cultivo, o None si Eurostat no lo publica."""
+    codes = EUROSTAT_CODES.get(crop_id)
+    if codes is None:
+        return None
+    return get_market(country, codes[0], [])["precio"]
+
+
 def crop_economics(crop_id, percent: Optional[float], country: str) -> Optional[dict]:
     """Precio, rendimiento e ingreso por hectárea de un cultivo, o None si Eurostat no lo publica."""
     codes = EUROSTAT_CODES.get(crop_id)
