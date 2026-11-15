@@ -1,5 +1,9 @@
 from sqlalchemy import text
 from config import SessionLocal
+from modelo_predicciones.modelo_europa import CULTIVOS
+
+# Ids de la tabla cultivos que entran en el modelo de /recomendacion (18 herbáceos).
+MODEL_CROP_IDS = sorted(crop_id for crop_id, _ in CULTIVOS.values())
 
 def retrieve_crops_data():
     """
@@ -106,10 +110,11 @@ def retrieve_crops_data():
         db.close()
 
 def retrieve_crops_basic_info():
+    """Solo los cultivos que sabe recomendar el modelo (modelo_predicciones/modelo_europa.py)."""
     db = SessionLocal()
     try:
-        query = text("SELECT id, grupo, cultivo FROM cultivos;")
-        result = db.execute(query).fetchall()
+        query = text("SELECT id, grupo, cultivo FROM cultivos WHERE id = ANY(:ids) ORDER BY id;")
+        result = db.execute(query, {"ids": MODEL_CROP_IDS}).fetchall()
 
         crops_list = []
         for row in result:
