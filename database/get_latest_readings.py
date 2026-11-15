@@ -62,7 +62,7 @@ def _query_icinga(dispositivo: Optional[str]):
             _icinga_warned = True
             logger.warning(
                 "Sin acceso al bucket '%s' de InfluxDB (HTTP %s): el panel no mostrará "
-                "UP/DOWN. Define INFLUX_ICINGA_TOKEN (token de solo lectura de ese bucket) en .env",
+                "UP/DOWN. Revisa INFLUX_ICINGA_TOKEN en config.py (token de solo lectura de ese bucket)",
                 INFLUX_BUCKET_ICINGA, e.status,
             )
         return None
