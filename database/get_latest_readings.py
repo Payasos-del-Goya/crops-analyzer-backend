@@ -8,9 +8,9 @@ from influxdb_client.rest import ApiException
 from config import (
     influxdb_client,
     icinga_influx_client,
-    INFLUX_BUCKET,
-    INFLUX_BUCKET_ESTADO,
     INFLUX_BUCKET_ICINGA,
+    bucket_campo,
+    bucket_estado,
     INFLUX_ORG,
 )
 
@@ -68,10 +68,10 @@ def _query_icinga(dispositivo: Optional[str]):
         return None
 
 
-def get_latest_readings(start: str = "-24h", dispositivo: Optional[str] = None):
+def get_latest_readings(cliente_id: str, start: str = "-24h", dispositivo: Optional[str] = None):
     """
-    Última lectura de cada baliza: suelo y atmósfera (bucket de campo) y
-    estado de la placa (bucket de estado). Devuelve una lista por dispositivo.
+    Última lectura de cada baliza del cliente: suelo y atmósfera (bucket de
+    campo) y estado de la placa (bucket de estado). Una entrada por dispositivo.
     """
     if not _START_RE.match(start):
         raise ValueError("start debe ser un rango relativo como -30m, -24h o -7d")
@@ -103,7 +103,7 @@ def get_latest_readings(start: str = "-24h", dispositivo: Optional[str] = None):
             times[key] = time
             target[field] = value
 
-    for table in _query_last(INFLUX_BUCKET, ["suelo", "atmosfera"], start, dispositivo):
+    for table in _query_last(bucket_campo(cliente_id), ["suelo", "atmosfera"], start, dispositivo):
         for r in table.records:
             d = device(r.values.get("dispositivo"))
             t = r.get_time()
@@ -124,7 +124,7 @@ def get_latest_readings(start: str = "-24h", dispositivo: Optional[str] = None):
                 if r.values.get("simulado") == "true":
                     d["simulado"] = True
 
-    for table in _query_last(INFLUX_BUCKET_ESTADO, ["dispositivo"], start, dispositivo):
+    for table in _query_last(bucket_estado(cliente_id), ["dispositivo"], start, dispositivo):
         for r in table.records:
             d = device(r.values.get("dispositivo"))
             t = r.get_time()
@@ -146,7 +146,7 @@ def get_latest_readings(start: str = "-24h", dispositivo: Optional[str] = None):
 
     for host, (time, measurement, state) in latest.items():
         d = devices.get(host)
-        if d is None:  # hosts de Icinga que no son balizas (p. ej. la Pi)
+        if d is None:  # la Pi u otros hosts que no son balizas de este cliente
             continue
         reachable = next(
             (r.get_value() for r in records
