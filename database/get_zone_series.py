@@ -5,8 +5,14 @@ Para cada campo, la media horaria de todas las balizas del grupo (y de todas las
 profundidades). Con eso se sacan series diarias (temperatura media y mínima,
 humedad relativa, luz) y medias del periodo para el suelo (pH, conductividad,
 humedad volumétrica).
+
+Un año de lecturas tarda ~2 s por zona en la Pi (más con más zonas: no gana nada
+en paralelo), así que cada grupo de balizas se guarda en memoria una hora. Las
+series son diarias: lo que falta de hoy no cambia la recomendación.
 """
 import re
+import threading
+import time
 from collections import defaultdict
 from datetime import timedelta
 
@@ -20,6 +26,10 @@ FIELDS = {
 MIN_HOURS_PER_DAY = 20
 # lux de luz solar -> PPFD (µmol m⁻² s⁻¹): 1 klx ≈ 18,5 µmol (sol directo).
 LUX_TO_PPFD = 0.0185
+
+CACHE_SECONDS = 3600
+_cache: dict = {}  # (cliente, balizas, start) -> (cuándo, series)
+_lock = threading.Lock()
 
 _START_RE = re.compile(r"^-\d+[smhd]$")
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -35,6 +45,28 @@ def get_zone_series(cliente_id: str, balizas: list[str], start: str = "-365d") -
         raise ValueError("start debe ser un rango relativo como -90d o -365d")
     if not balizas or not all(_ID_RE.match(b) for b in balizas):
         raise ValueError("balizas no válidas")
+    key = (cliente_id, tuple(sorted(balizas)), start)
+    with _lock:
+        cached = _cache.get(key)
+        if cached and time.time() - cached[0] < CACHE_SECONDS:
+            return cached[1]
+        # Sin crecer sin límite: fuera lo caducado.
+        for old in [k for k, (t, _) in _cache.items() if time.time() - t >= CACHE_SECONDS]:
+            del _cache[old]
+    series = _query(cliente_id, balizas, start)
+    with _lock:
+        _cache[key] = (time.time(), series)
+    return series
+
+
+def forget_older_than(seconds: float) -> None:
+    """Descarta lo guardado hace más de `seconds` (el precalentamiento lo renueva antes de que caduque)."""
+    with _lock:
+        for key in [k for k, (t, _) in _cache.items() if time.time() - t >= seconds]:
+            del _cache[key]
+
+
+def _query(cliente_id: str, balizas: list[str], start: str) -> dict:
 
     devices = " or ".join(f'r["dispositivo"] == "{b}"' for b in balizas)
     fields = " or ".join(

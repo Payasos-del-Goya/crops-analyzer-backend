@@ -1,4 +1,5 @@
 # main.py
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Response, WebSocket, WebSocketDisconnect
@@ -20,10 +21,19 @@ from pydantic import BaseModel
 from endpoints.balizas import create_baliza, retrieve_balizas_basic_info
 from endpoints.crops import retrieve_crops_basic_info, retrieve_crops_data
 from graph.idoneidad import get_suitability
+from graph.precalentar import warm_up_in_background
 from graph.recomendacion import get_recommendation
 from realtime import MonitorHub
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # La primera /recomendacion de cada finca tarda hasta ~25 s: se adelanta al arrancar.
+    warm_up_in_background()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 def get_db():
     db = SessionLocal()

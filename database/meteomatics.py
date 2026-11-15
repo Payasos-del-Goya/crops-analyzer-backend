@@ -8,6 +8,10 @@ las heladas o la temporada de cultivo. Para cada punto se piden los últimos
 la temperatura, para las horas de frío), con todos los puntos en la misma
 petición. El resultado se guarda en memoria unas horas: la cuenta tiene un
 límite de 1000 peticiones al día.
+
+También se guarda en disco (cache/meteomatics.json, fuera de git): sobrevive a
+los reinicios del backend y, si Meteomatics no responde, se usa el último año
+que se descargó de cada punto en vez de quedarse sin recomendación.
 """
 import base64
 import json
@@ -15,6 +19,7 @@ import logging
 import threading
 import time
 import urllib.error
+from pathlib import Path
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
@@ -44,8 +49,11 @@ CACHE_SECONDS = 6 * 3600
 ROUND_DEGREES = 2
 TIMEOUT_SECONDS = 30
 
+DISK_PATH = Path(__file__).resolve().parent.parent / "cache" / "meteomatics.json"
+
 _cache: dict = {}
 _lock = threading.Lock()
+_disk: Optional[dict] = None  # "lat,lon" -> {"fin", "guardado", "clima"}; se carga al primer uso
 
 
 class MeteomaticsError(RuntimeError):
@@ -115,6 +123,39 @@ def _fetch(points: list[tuple[float, float]], end: date) -> list[dict]:
     return result
 
 
+def _key(point) -> str:
+    return f"{point[0]:.2f},{point[1]:.2f}"
+
+
+def _disk_entries() -> dict:
+    """Lo guardado en disco (con _lock tomado)."""
+    global _disk
+    if _disk is None:
+        _disk = {}
+        try:
+            for key, entry in json.loads(DISK_PATH.read_text()).items():
+                entry["clima"]["dias"] = [date.fromisoformat(d) for d in entry["clima"]["dias"]]
+                _disk[key] = entry
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            logger.warning("No se puede leer %s (%s): se empieza de cero", DISK_PATH, e)
+    return _disk
+
+
+def _save_disk() -> None:
+    """Escribe la caché de disco (con _lock tomado). Si no se puede, solo avisa."""
+    data = {key: {**entry, "clima": {**entry["clima"], "dias": [d.isoformat() for d in entry["clima"]["dias"]]}}
+            for key, entry in _disk.items()}
+    try:
+        DISK_PATH.parent.mkdir(exist_ok=True)
+        tmp = DISK_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data))
+        tmp.replace(DISK_PATH)
+    except OSError as e:
+        logger.warning("No se puede guardar %s: %s", DISK_PATH, e)
+
+
 def get_climate_year(coordinates: list[tuple[float, float]], end: Optional[date] = None) -> list[dict]:
     """
     Último año de clima de cada punto (lat, lon), en el mismo orden.
@@ -129,12 +170,36 @@ def get_climate_year(coordinates: list[tuple[float, float]], end: Optional[date]
     points = [(round(lat, ROUND_DEGREES), round(lon, ROUND_DEGREES)) for lat, lon in coordinates]
     now = time.time()
     with _lock:
-        missing = sorted({p for p in points
-                          if (p, end) not in _cache or now - _cache[(p, end)][0] >= CACHE_SECONDS})
+        disk = _disk_entries()
+        missing = set()
+        for p in points:
+            if (p, end) in _cache and now - _cache[(p, end)][0] < CACHE_SECONDS:
+                continue
+            saved = disk.get(_key(p))
+            if saved and saved["fin"] == end.isoformat() and now - saved["guardado"] < CACHE_SECONDS:
+                _cache[(p, end)] = (saved["guardado"], saved["clima"])  # descargado antes de reiniciar
+                continue
+            missing.add(p)
+        missing = sorted(missing)
     if missing:
-        fetched = _fetch(missing, end)
+        try:
+            fetched = _fetch(missing, end)
+        except MeteomaticsError as e:
+            with _lock:
+                saved = [disk.get(_key(p)) for p in missing]
+            if not all(saved):
+                raise
+            # Sin Meteomatics: el último año descargado de cada punto (no se guarda en _cache
+            # para volver a intentarlo en la siguiente consulta).
+            logger.warning("%s: se usa el clima guardado en disco (descargado hasta %s)",
+                           e, min(s["fin"] for s in saved))
+            fallback = {p: s["clima"] for p, s in zip(missing, saved)}
+            with _lock:
+                return [fallback[p] if p in fallback else _cache[(p, end)][1] for p in points]
         with _lock:
             for point, climate in zip(missing, fetched):
                 _cache[(point, end)] = (now, climate)
+                disk[_key(point)] = {"fin": end.isoformat(), "guardado": now, "clima": climate}
+            _save_disk()
     with _lock:
         return [_cache[(p, end)][1] for p in points]
