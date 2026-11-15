@@ -1,3 +1,3 @@
 from graph.graphIF import get_predictions
 
-print(get_predictions(2, "c002"))
+print(get_predictions("c002", 2))

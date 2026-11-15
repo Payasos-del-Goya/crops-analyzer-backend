@@ -1,20 +1,30 @@
+import math
+from pathlib import Path
+
 import joblib
 import pandas as pd
 
-# 1. Cargar el modelo y los metadatos
-modelo_cargado = joblib.load('modelo_predicciones/modelo_rendimiento_cultivos.joblib')
-meta = joblib.load('modelo_predicciones/metadatos_modelo.joblib')
+# 1. Cargar el modelo y los metadatos (ruta relativa a este archivo, no al
+#    directorio desde el que se arranque uvicorn)
+_DIR = Path(__file__).resolve().parent
+modelo_cargado = joblib.load(_DIR / 'modelo_rendimiento_cultivos.joblib')
+meta = joblib.load(_DIR / 'metadatos_modelo.joblib')
+
+
+def _num(value):
+    # None (parámetro sin dato) -> NaN numérico; con None la columna sería object.
+    return math.nan if value is None else float(value)
 
 # 2. Definir función de recomendación usando únicamente los archivos exportados
 def recomendar_con_modelo_exportado(temperatura, humedad_amb, humedad_tierra, horas_luz, ph):
     resultados = []
     for crop in meta['cultivos_disponibles']:
         data_dict = {
-            meta['column_mapping']['Temperature']: temperatura,
-            meta['column_mapping']['Humidity']: humedad_amb,
-            meta['column_mapping']['Soil_Moisture']: humedad_tierra,
-            meta['column_mapping']['Sunlight_Hours']: horas_luz,
-            meta['column_mapping']['Soil_pH']: ph,
+            meta['column_mapping']['Temperature']: _num(temperatura),
+            meta['column_mapping']['Humidity']: _num(humedad_amb),
+            meta['column_mapping']['Soil_Moisture']: _num(humedad_tierra),
+            meta['column_mapping']['Sunlight_Hours']: _num(horas_luz),
+            meta['column_mapping']['Soil_pH']: _num(ph),
         }
 
         for c in meta['cultivos_disponibles']:

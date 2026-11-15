@@ -1,4 +1,5 @@
 # main.py
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Response, WebSocket, WebSocketDisconnect
@@ -19,9 +20,20 @@ from sqlalchemy import text
 from pydantic import BaseModel
 from endpoints.balizas import create_baliza, retrieve_balizas_basic_info
 from endpoints.crops import retrieve_crops_basic_info, retrieve_crops_data
+from graph.idoneidad import get_suitability
+from graph.precalentar import warm_up_in_background
+from graph.recomendacion import get_recommendation
 from realtime import MonitorHub
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # La primera /recomendacion de cada finca tarda hasta ~25 s: se adelanta al arrancar.
+    warm_up_in_background()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 def get_db():
     db = SessionLocal()
@@ -146,6 +158,75 @@ async def ws_monitor(ws: WebSocket):
         pass
     finally:
         hub.disconnect(ws)
+
+
+@app.get("/idoneidad")
+def get_idoneidad(n: int = 1, balizas: Optional[str] = None, start: str = "-365d",
+                  start_zonas: str = "-24h", cultivos: Optional[str] = None, top: int = 10,
+                  regadio: bool = False, orden: str = "idoneidad",
+                  min_porcentaje: Optional[float] = None, pais: Optional[str] = None,
+                  session: dict = Depends(current_session)):
+    """
+    % de acercamiento de un conjunto de balizas a las condiciones ideales de cada
+    cultivo, con un sistema de reglas (graph/idoneidad.py).
+
+    - balizas: ids separados por comas (por defecto, todas las del cliente).
+    - n: zonas en que se parten con SKATER sobre el grafo de balizas (1 = un grupo).
+    - start: histórico de InfluxDB que se usa; lo que falte del último año sale de Meteomatics.
+    - start_zonas: periodo con el que SKATER compara las balizas para hacer las zonas.
+    - cultivos: ids de cultivo separados por comas (por defecto, todos).
+    - top: cultivos por zona en la respuesta (0 = todos).
+    - regadio: si es True la lluvia anual no cuenta.
+    - orden: "idoneidad" (por defecto) o "ingreso": por ingreso esperado en €/ha
+      (precio × rendimiento medios del país, de Eurostat, × % de idoneidad).
+    - min_porcentaje: deja fuera los cultivos que encajan menos (50 por defecto con orden=ingreso).
+    - pais: código de Eurostat para precios y rendimientos (por defecto, el del cliente).
+    """
+    try:
+        baliza_ids = [b.strip() for b in balizas.split(",") if b.strip()] if balizas else None
+        cultivo_ids = [int(c) for c in cultivos.split(",") if c.strip()] if cultivos else None
+        if n < 1:
+            raise ValueError("n debe ser al menos 1")
+        data = get_suitability(session["cliente_id"], n=n, balizas=baliza_ids, start=start,
+                               start_zonas=start_zonas, cultivos=cultivo_ids, top=top, regadio=regadio,
+                               orden=orden, min_porcentaje=min_porcentaje, pais=pais)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"status": "success", **data}
+
+
+@app.get("/recomendacion")
+def get_recomendacion(n: int = 1, balizas: Optional[str] = None, start: str = "-365d",
+                      start_zonas: str = "-24h", top: int = 10, orden: str = "puntuacion",
+                      pais: Optional[str] = None, fecha: Optional[str] = None, epoca: str = "primero",
+                      session: dict = Depends(current_session)):
+    """
+    Cultivos recomendados por zona con el modelo entrenado (Eurostat + NASA POWER,
+    modelo_predicciones/modelo_europa.py): qué parte de la tierra se dedica a cada
+    cultivo con el clima de la zona (cuota) y su rendimiento previsto, con el
+    precio de venta de Eurostat.
+
+    - balizas, n, start, start_zonas: como en /idoneidad.
+    - orden: "puntuacion" (por defecto: cuota × lo que el cultivo rinde y se paga aquí
+      frente a lo habitual en Europa), "cuota" o "ingreso" (ingreso bruto en €/ha,
+      solo como referencia: sin costes favorece siempre a la patata).
+    - top: cultivos por zona (0 = todos los del modelo).
+    - pais: código de Eurostat para los precios (por defecto, el del cliente).
+    - fecha: día de la consulta, AAAA-MM-DD (por defecto hoy). Cada cultivo lleva su época
+      de siembra en la zona (calendario GGCMI) y si toca sembrarlo en esa fecha.
+    - epoca: "primero" (por defecto: los cultivos en época de siembra van delante),
+      "solo" (solo esos) o "todas" (sin mirar la fecha).
+    """
+    try:
+        baliza_ids = [b.strip() for b in balizas.split(",") if b.strip()] if balizas else None
+        if n < 1:
+            raise ValueError("n debe ser al menos 1")
+        data = get_recommendation(session["cliente_id"], n=n, balizas=baliza_ids, start=start,
+                                  start_zonas=start_zonas, top=top, orden=orden, pais=pais,
+                                  fecha=fecha, epoca=epoca)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"status": "success", **data}
 
 
 @app.get("/crops")

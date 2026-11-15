@@ -53,6 +53,18 @@ influxdb_client = influxdb_client.InfluxDBClient(
     org=INFLUX_ORG
 )
 
+# Meteomatics: clima de lo que las balizas no miden (lluvia, viento, radiación,
+# horas de frío) y del año completo. Cuenta del hackathon, válida hasta el
+# 22-11-2026, límite de 1000 peticiones al día (el backend las cachea).
+METEOMATICS_URL = os.getenv("METEOMATICS_URL", "https://api.meteomatics.com")
+METEOMATICS_USER = os.getenv("METEOMATICS_USER", "hackathon_nasa_space_apps_bernal_guillermo")
+METEOMATICS_PASSWORD = os.getenv("METEOMATICS_PASSWORD", "cf6S79u5GR8SyqT23y5J")
+
+# País de cada cliente (código de Eurostat) para los precios y rendimientos de
+# los cultivos. La tabla `clientes` no lo guarda.
+CLIENTE_PAIS = {"c001": "ES", "c002": "ES", "c003": "IE", "c004": "NO"}
+PAIS_POR_DEFECTO = "ES"
+
 POSTGRES_USER = os.getenv("POSTGRES_USER", "fieldshift_app")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "xCsS8yLRVs8fKLyUnFrnaFJw")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "fieldshift-gw.local")

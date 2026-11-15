@@ -1,135 +1,132 @@
+import math
+import re
+from collections import defaultdict
+
+from config import influxdb_client, bucket_campo, INFLUX_ORG
 from endpoints.balizas import retrieve_balizas_basic_info
-from database.get_baliza_network import get_baliza_network
 from graph.graphManager import GraphManager
 from modelo_predicciones.model_IF import recomendacion_avanzada
 
-def get_balizas_data(start: str = "-10m", end: str = "now()", period: str = "1h", client_id: str = "c001"):
+# Parámetros que usa el modelo de rendimiento, en este orden. Son también los
+# que comparan SKATER para decidir qué balizas se parecen.
+PARAMETER_KEYS = ["temp_aire", "hr", "humedad_vol", "light_hours", "ph"]
+# Campos de InfluxDB de donde salen (light_hours se calcula a partir de luz_lux).
+INFLUX_FIELDS = {"temp_aire", "hr", "humedad_vol", "ph", "luz_lux"}
+LIGHT_LUX_THRESHOLD = 400  # una hora cuenta como "de luz" si su media supera esto
+
+# Se interpolan en Flux: solo rangos relativos simples.
+_START_RE = re.compile(r"^-\d+[smhd]$")
+
+
+def get_balizas_data(cliente_id: str, start: str = "-24h"):
     """
-    Retrieves basic information about balizas and their corresponding network data.
+    Coordenadas y parámetros medios de cada baliza del cliente.
+
+    Una sola consulta a InfluxDB (suelo + atmósfera) con medias horarias:
+    - temp_aire, hr, humedad_vol, ph: media de las medias horarias (y de todas
+      las profundidades, si hay varias).
+    - light_hours: horas con luz al día = fracción de horas con media de
+      luz_lux > 400, escalada a 24 h (el modelo espera horas de sol diarias).
+
+    Devuelve {id: {"coordinates": (lat, lon), "parameters": {clave: valor|None}}}
+    para todas las balizas registradas, tengan o no datos recientes.
     """
-    # Retrieve basic information about balizas
-    balizas_info = retrieve_balizas_basic_info(client_id)
+    if not _START_RE.match(start):
+        raise ValueError("start debe ser un rango relativo como -6h o -24h")
 
-    # For each baliza, retrieve its network data
-    baliza_output = {}
-    for baliza in balizas_info:
-        dispositivo = baliza['id']
-        tables = get_baliza_network(client_id, start, end, period, dispositivo=dispositivo)
-        for table in tables:
-            values = []
-            fields = []
-            times = []
-            for record in table.records:
-                values.append(record.get_value())
-                fields.append(record.get_field())
-                times.append(record.get_time())
+    fields = " or ".join(f'r["_field"] == "{f}"' for f in sorted(INFLUX_FIELDS))
+    query = f'''
+        from(bucket: "{bucket_campo(cliente_id)}")
+          |> range(start: {start})
+          |> filter(fn: (r) => (r["_measurement"] == "suelo" or r["_measurement"] == "atmosfera") and ({fields}))
+          |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+    '''
+    tables = influxdb_client.query_api().query(query=query, org=INFLUX_ORG)
 
-            measurements = {}
-            for field, value in zip(fields, values):
-                if field not in measurements:
-                    measurements[field] = []
-                measurements[field].append(value)
+    hourly = defaultdict(lambda: defaultdict(list))  # dispositivo -> campo -> [medias]
+    for table in tables:
+        for record in table.records:
+            value = record.get_value()
+            if value is None:
+                continue
+            hourly[record.values.get("dispositivo")][record.get_field()].append(float(value))
 
-            mean_values = {}
-            for field, vals in measurements.items():
-                if field == "luz_lux":
-                    light_hours = sum(1 for value in vals if value > 400) #TODO : only valid if period == 1h
-                    mean_values["light_hours"] = light_hours
-                else:
-                    mean_values[field] = sum(vals) / len(vals)
+    data = {}
+    for baliza in retrieve_balizas_basic_info(cliente_id):
+        measurements = hourly.get(baliza["id"], {})
+        parameters = {key: None for key in PARAMETER_KEYS}
+        for field, values in measurements.items():
+            if not values:
+                continue
+            if field == "luz_lux":
+                lit = sum(1 for v in values if v > LIGHT_LUX_THRESHOLD)
+                parameters["light_hours"] = 24.0 * lit / len(values)
+            elif field in parameters:
+                parameters[field] = sum(values) / len(values)
 
-        baliza_output[dispositivo] = {
-            "coordinates": (baliza['latitud'], baliza['longitud']),
-            "parameters": mean_values
+        data[baliza["id"]] = {
+            # PostgreSQL devuelve Decimal: a float para numpy/JSON.
+            "coordinates": (float(baliza["latitud"]), float(baliza["longitud"])),
+            "parameters": parameters,
         }
+    return data
 
-    return baliza_output
 
 def order_data(data):
     """
-    Prepare the data structure expected by GraphManager.
+    Prepara la estructura que espera GraphManager, ordenada por id de baliza.
 
-    Returns a tuple with:
-        - baliza_index: dict mapping baliza id -> index in [0, n)
-        - coordinates: list of (x, y) tuples in the same order as the indices
-        - parameter_list: list of parameter tuples in the same order as the indices
-        - parameter_keys: ordered keys from the mean_values dictionary
+    Returns:
+        - baliza_ids: lista de ids en el orden de las filas
+        - coordinates: lista de (lat, lon)
+        - parameter_list: lista de tuplas con PARAMETER_KEYS (NaN si falta)
+        - parameter_keys: PARAMETER_KEYS
     """
-    ordered_balizas = sorted(data.items(), key=lambda item: item[0])
+    baliza_ids = sorted(data)
+    coordinates = [tuple(data[b]["coordinates"]) for b in baliza_ids]
+    parameter_list = [
+        tuple(math.nan if data[b]["parameters"].get(key) is None else data[b]["parameters"][key]
+              for key in PARAMETER_KEYS)
+        for b in baliza_ids
+    ]
+    return baliza_ids, coordinates, parameter_list, list(PARAMETER_KEYS)
 
-    baliza_index = {}
-    coordinates = []
-    parameter_list = []
-    parameter_keys = []
 
-    for index, (baliza_id, baliza_data) in enumerate(ordered_balizas):
-        baliza_index[baliza_id] = index
-        coordinates.append(tuple(baliza_data["coordinates"]))
-
-        params = baliza_data["parameters"]
-        if not parameter_keys:
-            parameter_keys = list(params.keys())
-
-        parameter_list.append(tuple(params[key] for key in parameter_keys))
-
-    return baliza_index, coordinates, parameter_list, parameter_keys
-
-def extract_zone_parameters(zone_means, parameter_keys, label=0):
+def get_predictions(cliente_id: str, n: int, start: str = "-24h", k: int = 2):
     """
-    Extract the values of the main agronomic parameters from the zone means list,
-    following the order defined by parameter_keys.
+    Divide las balizas del cliente en n zonas contiguas y parecidas (SKATER) y
+    recomienda cultivos para cada zona con el modelo de rendimiento.
+
+    Returns:
+        - baliza_zones: {id_baliza: zona}
+        - zones: {zona: {"parametros": {clave: media|None}, "balizas": [...],
+                         "recomendacion": [(cultivo, t/ha), ...]}}
     """
-    ordered_vars = zone_means.get(label, [])
-    if not ordered_vars:
-        return {
-            "temp_aire": None,
-            "hr": None,
-            "humedad_vol": None,
-            "light_hours": None,
-            "ph": None,
-        }
+    if int(n) < 1:
+        raise ValueError("n debe ser al menos 1")
 
-    index_by_key = {key: index for index, key in enumerate(parameter_keys)}
-    extracted = {}
-    for name in ["temp_aire", "hr", "humedad_vol", "light_hours", "ph"]:
-        if name in index_by_key:
-            value_index = index_by_key[name]
-            extracted[name] = ordered_vars[value_index] if value_index < len(ordered_vars) else None
-        else:
-            extracted[name] = None
+    baliza_data = get_balizas_data(cliente_id, start=start)
+    if not baliza_data:
+        return {}, {}
+    baliza_ids, coordinates, parameter_list, parameter_keys = order_data(baliza_data)
 
-    return extracted
+    positions = GraphManager.normalize_coordinates(coordinates)
+    graph = GraphManager.create_graph(positions, k=k)
 
-
-def get_predictions(n, client_id):
-
-    #Step 1: Retrieve baliza data
-    baliza_data = get_balizas_data(client_id=client_id)
-    baliza_index, coordinates, parameter_list, parameter_keys = order_data(baliza_data)
-
-    #Step 2: Normalize coordinates and create graph
-    normCoords = GraphManager.normalize_coordinates(coordinates)
-    graph = GraphManager.create_graph(normCoords, k=4)
-
-    #Step 3: Perform clustering and calculate zone means
-    labels = GraphManager.skate_clusting(graph, normCoords, parameter_list, parameter_keys, n)
+    labels = GraphManager.skate_clusting(graph, positions, parameter_list, parameter_keys, n)
     zone_means = GraphManager.zone_mean(labels, parameter_list)
 
-    zone_recomendation = {}
-    for label in range(len(zone_means)):
-        zone_parameters = extract_zone_parameters(zone_means, parameter_keys, label)
-        temp_aire = zone_parameters["temp_aire"]
-        hr = zone_parameters["hr"]
-        humedad_vol = zone_parameters["humedad_vol"]
-        light_hours = zone_parameters["light_hours"]
-        ph = zone_parameters["ph"]
-        zone_recomendation[label] = recomendacion_avanzada(temp_aire, hr, humedad_vol, light_hours, ph)
+    baliza_zones = dict(zip(baliza_ids, labels))
+    zones = {}
+    for label, means in zone_means.items():
+        params = dict(zip(parameter_keys, means))
+        recomendacion = recomendacion_avanzada(
+            params["temp_aire"], params["hr"], params["humedad_vol"], params["light_hours"], params["ph"],
+        )
+        zones[label] = {
+            "parametros": params,
+            "balizas": [b for b, z in baliza_zones.items() if z == label],
+            "recomendacion": [(crop, float(yield_t_ha)) for crop, yield_t_ha in recomendacion],
+        }
 
-
-    baliza_zones = {}
-    for baliza_id, label in zip(baliza_index, labels):
-        baliza_zones[baliza_id] = label
-
-    return baliza_zones, zone_recomendation
-
-
+    return baliza_zones, zones
