@@ -19,6 +19,7 @@ from sqlalchemy import text
 from pydantic import BaseModel
 from endpoints.balizas import create_baliza, retrieve_balizas_basic_info
 from endpoints.crops import retrieve_crops_basic_info, retrieve_crops_data
+from graph.idoneidad import get_suitability
 from realtime import MonitorHub
 
 app = FastAPI()
@@ -146,6 +147,34 @@ async def ws_monitor(ws: WebSocket):
         pass
     finally:
         hub.disconnect(ws)
+
+
+@app.get("/idoneidad")
+def get_idoneidad(n: int = 1, balizas: Optional[str] = None, start: str = "-365d",
+                  start_zonas: str = "-24h", cultivos: Optional[str] = None, top: int = 10,
+                  regadio: bool = False, session: dict = Depends(current_session)):
+    """
+    % de acercamiento de un conjunto de balizas a las condiciones ideales de cada
+    cultivo, con un sistema de reglas (graph/idoneidad.py).
+
+    - balizas: ids separados por comas (por defecto, todas las del cliente).
+    - n: zonas en que se parten con SKATER sobre el grafo de balizas (1 = un grupo).
+    - start: histórico de InfluxDB que se usa; lo que falte del último año sale de Meteomatics.
+    - start_zonas: periodo con el que SKATER compara las balizas para hacer las zonas.
+    - cultivos: ids de cultivo separados por comas (por defecto, todos).
+    - top: cultivos por zona en la respuesta (0 = todos).
+    - regadio: si es True la lluvia anual no cuenta.
+    """
+    try:
+        baliza_ids = [b.strip() for b in balizas.split(",") if b.strip()] if balizas else None
+        cultivo_ids = [int(c) for c in cultivos.split(",") if c.strip()] if cultivos else None
+        if n < 1:
+            raise ValueError("n debe ser al menos 1")
+        data = get_suitability(session["cliente_id"], n=n, balizas=baliza_ids, start=start,
+                               start_zonas=start_zonas, cultivos=cultivo_ids, top=top, regadio=regadio)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"status": "success", **data}
 
 
 @app.get("/crops")
