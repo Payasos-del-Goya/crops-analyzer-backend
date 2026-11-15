@@ -4,6 +4,7 @@ from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException
 from config import influxdb_client, INFLUX_BUCKET, INFLUX_ORG, SessionLocal
 from database.get_baliza_network import get_baliza_network
+from database.get_latest_readings import get_latest_readings
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from pydantic import BaseModel
@@ -55,6 +56,21 @@ def get_baliza_data(start: str = "-30m", period: str = "5m", dispositivo: str = 
         "status": "success",
         "data_points_retrieved": len(data_points),
         "data": data_points
+    }
+
+
+@app.get("/monitor")
+def get_monitor(start: str = "-24h", dispositivo: Optional[str] = None):
+    """Última lectura (suelo, atmósfera y estado) de cada baliza en InfluxDB."""
+    try:
+        dispositivos = get_latest_readings(start=start, dispositivo=dispositivo)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return {
+        "status": "success",
+        "count": len(dispositivos),
+        "dispositivos": dispositivos,
     }
 
 
