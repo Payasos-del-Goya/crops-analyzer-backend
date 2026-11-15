@@ -120,9 +120,9 @@ def get_recommendation(cliente_id: str, n: int = 1, balizas: Optional[list] = No
         elif epoca == "primero":
             crops.sort(key=in_season, reverse=True)  # estable: dentro de cada grupo, el orden pedido
         planted = Counter(registered[b]["cultivo_id"] for b in zone["balizas"] if registered[b]["cultivo_id"])
-        current = [{**by_id[crop_id], "balizas": count} if crop_id in by_id
-                   else {"id": crop_id, "balizas": count, "fuera_del_modelo": True}
-                   for crop_id, count in planted.most_common()]
+        # Solo lo plantado que el modelo conoce (los frutales y la pradera no salen).
+        current = [{**by_id[crop_id], "balizas": count}
+                   for crop_id, count in planted.most_common() if crop_id in by_id]
 
         result.append({
             "zona": label,
