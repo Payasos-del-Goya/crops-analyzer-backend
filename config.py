@@ -4,10 +4,6 @@ import influxdb_client
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-# Optional: Load from a .env file if you use python-dotenv
-# from dotenv import load_dotenv
-# load_dotenv()
-
 INFLUX_URL = os.getenv("INFLUX_URL", "http://10.42.0.1:8086")
 INFLUX_TOKEN = os.getenv("INFLUX_TOKEN", "rY1fmYQWDkTofiYVpqCu21jkgAgTz2JfoZcwnNCfe824Uz1vWqr9z2P-fjBRsRNo9pXtey6XesRCH3SrIOIasw==")
 INFLUX_ORG = os.getenv("INFLUX_ORG", "fieldshift")
@@ -16,7 +12,8 @@ INFLUX_BUCKET_ESTADO = os.getenv("INFLUX_BUCKET_ESTADO", "c001_estado")
 # Resultados de los checks de Icinga2 (UP/DOWN de cada baliza). Si el token
 # principal no puede leer este bucket, se puede dar uno aparte.
 INFLUX_BUCKET_ICINGA = os.getenv("INFLUX_BUCKET_ICINGA", "icinga")
-INFLUX_ICINGA_TOKEN = os.getenv("INFLUX_ICINGA_TOKEN")
+# Token de solo lectura del bucket `icinga` (creado para este backend).
+INFLUX_ICINGA_TOKEN = os.getenv("INFLUX_ICINGA_TOKEN", "KUllDYecIlYYmJEGrp-pUFdqCff1cvFmfepETBYrizBPQn3IhdUfQeWrSj4vvfVs8GAGJLLGCywr5FdgL79fMg==")
 
 # Cliente al que se asignan las balizas creadas por POST /balizas (demo).
 DEMO_CLIENTE_ID = os.getenv("DEMO_CLIENTE_ID", "c001")
