@@ -13,9 +13,20 @@ INFLUX_TOKEN = os.getenv("INFLUX_TOKEN", "rY1fmYQWDkTofiYVpqCu21jkgAgTz2JfoZcwnN
 INFLUX_ORG = os.getenv("INFLUX_ORG", "fieldshift")
 INFLUX_BUCKET = os.getenv("INFLUX_BUCKET", "c001_campo")
 INFLUX_BUCKET_ESTADO = os.getenv("INFLUX_BUCKET_ESTADO", "c001_estado")
+# Resultados de los checks de Icinga2 (UP/DOWN de cada baliza). Si el token
+# principal no puede leer este bucket, se puede dar uno aparte.
+INFLUX_BUCKET_ICINGA = os.getenv("INFLUX_BUCKET_ICINGA", "icinga")
+INFLUX_ICINGA_TOKEN = os.getenv("INFLUX_ICINGA_TOKEN")
 
 # Cliente al que se asignan las balizas creadas por POST /balizas (demo).
 DEMO_CLIENTE_ID = os.getenv("DEMO_CLIENTE_ID", "c001")
+
+# Cliente para el bucket de Icinga (el principal si no hay token propio).
+icinga_influx_client = (
+    influxdb_client.InfluxDBClient(url=INFLUX_URL, token=INFLUX_ICINGA_TOKEN, org=INFLUX_ORG)
+    if INFLUX_ICINGA_TOKEN
+    else None
+)
 
 # Initialize a single global client instance to be imported elsewhere
 influxdb_client = influxdb_client.InfluxDBClient(

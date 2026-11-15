@@ -1,7 +1,27 @@
 import re
 from typing import Optional
 
-from config import influxdb_client, INFLUX_BUCKET, INFLUX_BUCKET_ESTADO, INFLUX_ORG
+import logging
+
+from influxdb_client.rest import ApiException
+
+from config import (
+    influxdb_client,
+    icinga_influx_client,
+    INFLUX_BUCKET,
+    INFLUX_BUCKET_ESTADO,
+    INFLUX_BUCKET_ICINGA,
+    INFLUX_ORG,
+)
+
+logger = logging.getLogger(__name__)
+
+# Measurement que escribe Icinga2 para el host check de las balizas
+# (check_command del template "fieldshift-baliza"). state: 0 = UP, 1 = DOWN.
+ICINGA_MEASUREMENT = "fieldshift-baliza"
+# Solo cuentan resultados recientes: los hosts que ya no existen en Icinga
+# (p. ej. los antiguos b01..b03) dejan de escribir y no deben salir como DOWN.
+ICINGA_MAX_AGE = "-15m"
 
 # Solo se aceptan rangos relativos simples (-30m, -24h, -7d) y nombres de
 # dispositivo alfanuméricos, porque se interpolan en la consulta Flux.
@@ -19,6 +39,25 @@ def _query_last(bucket: str, measurements: list[str], start: str, dispositivo: O
           |> last()
     '''
     return influxdb_client.query_api().query(query=query, org=INFLUX_ORG)
+
+
+def _query_icinga(dispositivo: Optional[str]):
+    """Último estado de host de cada baliza según Icinga2, o None si no hay acceso."""
+    client = icinga_influx_client or influxdb_client
+    device_filter = f' and r["hostname"] == "{dispositivo}"' if dispositivo else ""
+    query = f'''
+        from(bucket: "{INFLUX_BUCKET_ICINGA}")
+          |> range(start: {ICINGA_MAX_AGE})
+          |> filter(fn: (r) => r["_measurement"] == "{ICINGA_MEASUREMENT}"
+              and not exists r["service"]
+              and (r["_field"] == "state" or r["_field"] == "reachable"){device_filter})
+          |> last()
+    '''
+    try:
+        return client.query_api().query(query=query, org=INFLUX_ORG)
+    except ApiException as e:
+        logger.warning("No se puede leer el bucket de Icinga (%s): %s", INFLUX_BUCKET_ICINGA, e.status)
+        return None
 
 
 def get_latest_readings(start: str = "-24h", dispositivo: Optional[str] = None):
@@ -40,6 +79,8 @@ def get_latest_readings(start: str = "-24h", dispositivo: Optional[str] = None):
             "ultima_lectura": None,
             "ultimo_estado": None,
             "simulado": False,
+            # {"estado": "UP"|"DOWN", "alcanzable": bool, "comprobado": time} o None si Icinga no la vigila
+            "icinga": None,
             "atmosfera": {},
             "suelo": {},
             "estado": {},
@@ -84,8 +125,20 @@ def get_latest_readings(start: str = "-24h", dispositivo: Optional[str] = None):
                 d["ultimo_estado"] = t
             keep((d["dispositivo"], "estado", r.get_field()), d["estado"], r.get_field(), r.get_value(), t)
 
+    icinga_tables = _query_icinga(dispositivo)
+    for table in icinga_tables or []:
+        for r in table.records:
+            d = device(r.values.get("hostname"))
+            info = d["icinga"] or {"estado": None, "alcanzable": None, "comprobado": None}
+            if r.get_field() == "state":
+                info["estado"] = "UP" if r.get_value() == 0 else "DOWN"
+                info["comprobado"] = r.get_time()
+            else:
+                info["alcanzable"] = bool(r.get_value())
+            d["icinga"] = info
+
     result = []
     for d in sorted(devices.values(), key=lambda x: x["dispositivo"]):
         d["suelo"] = sorted(d["suelo"].values(), key=lambda s: str(s["profundidad_cm"]))
         result.append(d)
-    return result
+    return result, icinga_tables is not None

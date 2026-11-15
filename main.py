@@ -63,13 +63,15 @@ def get_baliza_data(start: str = "-30m", period: str = "5m", dispositivo: str = 
 def get_monitor(start: str = "-24h", dispositivo: Optional[str] = None):
     """Última lectura (suelo, atmósfera y estado) de cada baliza en InfluxDB."""
     try:
-        dispositivos = get_latest_readings(start=start, dispositivo=dispositivo)
+        dispositivos, icinga_ok = get_latest_readings(start=start, dispositivo=dispositivo)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
     return {
         "status": "success",
         "count": len(dispositivos),
+        # False si el backend no puede leer el estado de Icinga (falta token).
+        "icinga_disponible": icinga_ok,
         "dispositivos": dispositivos,
     }
 
