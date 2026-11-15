@@ -113,3 +113,24 @@ class GraphManager:
 
         return labels
 
+    @staticmethod
+    def zone_mean(labels, parameters_list):
+        """
+        Return the mean of each parameter component for each label group.
+        Each parameter row is associated with its label and then the average is
+        computed independently for every position in the tuple.
+        """
+        if len(labels) != len(parameters_list):
+            raise ValueError("labels and parameters_list must have the same length")
+
+        grouped = {}
+        for label, params in zip(labels, parameters_list):
+            grouped.setdefault(label, []).append(np.asarray(params, dtype=float))
+
+        result = {}
+        for label, rows in grouped.items():
+            rows_array = np.asarray(rows, dtype=float)
+            result[int(label)] = np.mean(rows_array, axis=0).tolist()
+
+        return result
+
