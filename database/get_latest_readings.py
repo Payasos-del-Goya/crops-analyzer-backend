@@ -15,10 +15,12 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+_icinga_warned = False
 
-# Measurement que escribe Icinga2 para el host check de las balizas
-# (check_command del template "fieldshift-baliza"). state: 0 = UP, 1 = DOWN.
-ICINGA_MEASUREMENT = "fieldshift-baliza"
+# El host check de las balizas lo escribe Icinga2 con measurement = su
+# check_command, que ha cambiado (fieldshift-baliza → fieldshift-baliza-vida).
+# Para no depender del nombre se toma el host check más reciente de cada host
+# (puntos sin tag `service`). state: 0 = UP, 1 = DOWN.
 # Solo cuentan resultados recientes: los hosts que ya no existen en Icinga
 # (p. ej. los antiguos b01..b03) dejan de escribir y no deben salir como DOWN.
 ICINGA_MAX_AGE = "-15m"
@@ -48,15 +50,21 @@ def _query_icinga(dispositivo: Optional[str]):
     query = f'''
         from(bucket: "{INFLUX_BUCKET_ICINGA}")
           |> range(start: {ICINGA_MAX_AGE})
-          |> filter(fn: (r) => r["_measurement"] == "{ICINGA_MEASUREMENT}"
-              and not exists r["service"]
+          |> filter(fn: (r) => not exists r["service"]
               and (r["_field"] == "state" or r["_field"] == "reachable"){device_filter})
           |> last()
     '''
     try:
         return client.query_api().query(query=query, org=INFLUX_ORG)
     except ApiException as e:
-        logger.warning("No se puede leer el bucket de Icinga (%s): %s", INFLUX_BUCKET_ICINGA, e.status)
+        global _icinga_warned
+        if not _icinga_warned:  # una vez, no en cada consulta del WebSocket
+            _icinga_warned = True
+            logger.warning(
+                "Sin acceso al bucket '%s' de InfluxDB (HTTP %s): el panel no mostrará "
+                "UP/DOWN. Revisa INFLUX_ICINGA_TOKEN en config.py (token de solo lectura de ese bucket)",
+                INFLUX_BUCKET_ICINGA, e.status,
+            )
         return None
 
 
@@ -126,16 +134,32 @@ def get_latest_readings(start: str = "-24h", dispositivo: Optional[str] = None):
             keep((d["dispositivo"], "estado", r.get_field()), d["estado"], r.get_field(), r.get_value(), t)
 
     icinga_tables = _query_icinga(dispositivo)
-    for table in icinga_tables or []:
-        for r in table.records:
-            d = device(r.values.get("hostname"))
-            info = d["icinga"] or {"estado": None, "alcanzable": None, "comprobado": None}
-            if r.get_field() == "state":
-                info["estado"] = "UP" if r.get_value() == 0 else "DOWN"
-                info["comprobado"] = r.get_time()
-            else:
-                info["alcanzable"] = bool(r.get_value())
-            d["icinga"] = info
+    # Por host: el measurement (check) con el resultado de `state` más reciente.
+    latest: dict[str, tuple] = {}
+    records = [r for table in icinga_tables or [] for r in table.records]
+    for r in records:
+        if r.get_field() != "state":
+            continue
+        host = r.values.get("hostname")
+        if host not in latest or r.get_time() > latest[host][0]:
+            latest[host] = (r.get_time(), r.get_measurement(), r.get_value())
+
+    for host, (time, measurement, state) in latest.items():
+        d = devices.get(host)
+        if d is None:  # hosts de Icinga que no son balizas (p. ej. la Pi)
+            continue
+        reachable = next(
+            (r.get_value() for r in records
+             if r.values.get("hostname") == host
+             and r.get_measurement() == measurement
+             and r.get_field() == "reachable"),
+            None,
+        )
+        d["icinga"] = {
+            "estado": "UP" if state == 0 else "DOWN",
+            "alcanzable": None if reachable is None else bool(reachable),
+            "comprobado": time,
+        }
 
     result = []
     for d in sorted(devices.values(), key=lambda x: x["dispositivo"]):
