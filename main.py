@@ -1,4 +1,6 @@
 # main.py
+from typing import Optional
+
 from fastapi import FastAPI, Depends, HTTPException
 from config import influxdb_client, INFLUX_BUCKET, INFLUX_ORG, SessionLocal
 from database.get_baliza_network import get_baliza_network
@@ -22,6 +24,7 @@ class BalizaCreate(BaseModel):
     latitud: float
     longitud: float
     cultivo_id: int
+    label: Optional[str] = None
 
 @app.get("/")
 def read_root():
@@ -92,7 +95,8 @@ def add_baliza(baliza: BalizaCreate):
             id=baliza.id,
             latitud=baliza.latitud,
             longitud=baliza.longitud,
-            cultivo_id=baliza.cultivo_id
+            cultivo_id=baliza.cultivo_id,
+            label=baliza.label,
         )
         return {
             "status": "success",
