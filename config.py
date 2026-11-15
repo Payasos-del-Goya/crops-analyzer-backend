@@ -6,10 +6,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 INFLUX_URL = os.getenv("INFLUX_URL", "http://10.42.0.1:8086")
-INFLUX_TOKEN = os.getenv("INFLUX_TOKEN", "u7mSPiU37QRfaJk7pKFASYjcxkFxDObvDjfqSQBfI8kupVHKNUtJNqFqynzlWgrl6uuKjAaxZS1JgwQfS_WZgg==")
+INFLUX_TOKEN = os.getenv("INFLUX_TOKEN", "Vy-MgkoZUOHyMlMmMU9W74-6p4Z6Q-HcofcpCwve_sUAmtrRPIjL0DHAtNXwbCmowg3hvwnpU3AjoLvzWw7zqg==")
 INFLUX_ORG = os.getenv("INFLUX_ORG", "fieldshift")
 # Cada cliente tiene sus buckets: <cliente>_campo y <cliente>_estado (c001_campo...).
-# El token de arriba es de solo lectura de los de c001 y c002: para un cliente
+# El token de arriba es de solo lectura de los de c001 a c004: para un cliente
 # nuevo hay que darle lectura de sus buckets.
 # Resultados de los checks de Icinga2 (UP/DOWN de cada baliza). Si el token
 # principal no puede leer este bucket, se puede dar uno aparte.
