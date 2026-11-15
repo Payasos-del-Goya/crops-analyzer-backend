@@ -13,6 +13,9 @@ INFLUX_TOKEN = os.getenv("INFLUX_TOKEN", "rY1fmYQWDkTofiYVpqCu21jkgAgTz2JfoZcwnN
 INFLUX_ORG = os.getenv("INFLUX_ORG", "fieldshift")
 INFLUX_BUCKET = os.getenv("INFLUX_BUCKET", "c001_campo")
 
+# Cliente al que se asignan las balizas creadas por POST /balizas (demo).
+DEMO_CLIENTE_ID = os.getenv("DEMO_CLIENTE_ID", "c001")
+
 # Initialize a single global client instance to be imported elsewhere
 influxdb_client = influxdb_client.InfluxDBClient(
     url=INFLUX_URL,
