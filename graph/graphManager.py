@@ -46,7 +46,7 @@ class GraphManager:
         return shifted / scale
 
     @staticmethod
-    def create_graph(positions, k=2):
+    def create_graph(positions, k=4):
         """
         Create a graph from the given positions using k-nearest neighbors.
 

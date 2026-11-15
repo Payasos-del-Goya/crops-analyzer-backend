@@ -3,18 +3,18 @@ from database.get_baliza_network import get_baliza_network
 from graph.graphManager import GraphManager
 from modelo_predicciones.model_IF import recomendacion_avanzada
 
-def get_balizas_data(start: str = "-10m", end: str = "now()", period: str = "1h"):
+def get_balizas_data(start: str = "-10m", end: str = "now()", period: str = "1h", client_id: str = "c001"):
     """
     Retrieves basic information about balizas and their corresponding network data.
     """
     # Retrieve basic information about balizas
-    balizas_info = retrieve_balizas_basic_info()
+    balizas_info = retrieve_balizas_basic_info(client_id)
 
     # For each baliza, retrieve its network data
     baliza_output = {}
     for baliza in balizas_info:
         dispositivo = baliza['id']
-        tables = get_baliza_network(start, end, period, dispositivo=dispositivo)
+        tables = get_baliza_network(client_id, start, end, period, dispositivo=dispositivo)
         for table in tables:
             values = []
             fields = []
@@ -101,15 +101,15 @@ def extract_zone_parameters(zone_means, parameter_keys, label=0):
     return extracted
 
 
-def get_predictions(n):
+def get_predictions(n, client_id):
 
     #Step 1: Retrieve baliza data
-    baliza_data = get_balizas_data()
+    baliza_data = get_balizas_data(client_id=client_id)
     baliza_index, coordinates, parameter_list, parameter_keys = order_data(baliza_data)
 
     #Step 2: Normalize coordinates and create graph
     normCoords = GraphManager.normalize_coordinates(coordinates)
-    graph = GraphManager.create_graph(normCoords, k=2)
+    graph = GraphManager.create_graph(normCoords, k=4)
 
     #Step 3: Perform clustering and calculate zone means
     labels = GraphManager.skate_clusting(graph, normCoords, parameter_list, parameter_keys, n)
