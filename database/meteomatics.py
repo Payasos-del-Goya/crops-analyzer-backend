@@ -62,7 +62,7 @@ def _get(path: str) -> str:
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")[:200]
         raise MeteomaticsError(f"Meteomatics HTTP {e.code}: {detail}") from e
-    except (urllib.error.URLError, TimeoutError) as e:
+    except OSError as e:  # URLError, y socket.timeout si tarda en responder
         raise MeteomaticsError(f"Meteomatics no responde: {e}") from e
 
 

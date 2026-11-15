@@ -4,12 +4,22 @@ Recomendación de cultivos por zonas con el modelo entrenado (modelo_europa.py).
 Las zonas y sus condiciones salen igual que en la idoneidad (graph/idoneidad.py):
 balizas partidas con SKATER, último año de las balizas (InfluxDB) completado con
 Meteomatics. Con eso se calculan las variables de clima del modelo, que da para
-cada cultivo la probabilidad de que se dé ahí y su rendimiento. El precio de
-venta (Eurostat) convierte el rendimiento en ingreso por hectárea:
+cada cultivo su cuota (qué parte de la tierra le dedican las regiones con ese
+clima) y su rendimiento.
 
-    ingreso_esperado = probabilidad × rendimiento (t/ha) × precio (€/t)
+El orden no es el ingreso por hectárea: sin costes no se pueden comparar
+cultivos (una patata factura diez veces más que un cereal y saldría siempre
+primera, aunque cueste mucho más producirla y no se pueda repetir cada año).
+Cada cultivo se compara consigo mismo:
 
-Es ingreso bruto: no descuenta costes.
+    ventaja    = (rendimiento aquí / rendimiento habitual en Europa)
+                 × (precio en el país / precio habitual en Europa)
+    puntuación = cuota (%) × ventaja
+
+La cuota recoge lo que de verdad se siembra con ese clima (los agricultores ya
+cuentan con costes, rotación y mercado) y la ventaja sube los cultivos que aquí
+rinden o se pagan mejor de lo normal. El ingreso bruto por hectárea se da como
+dato, no como criterio.
 """
 import logging
 from collections import Counter
@@ -22,19 +32,23 @@ from modelo_predicciones.rentabilidad import crop_price
 
 logger = logging.getLogger(__name__)
 
+# orden -> campo por el que se ordena
+ORDER_KEYS = {"puntuacion": "puntuacion", "cuota": "cuota_pct", "ingreso": "ingreso_bruto_eur_ha"}
+
 
 def get_recommendation(cliente_id: str, n: int = 1, balizas: Optional[list] = None, start: str = "-365d",
-                       start_zonas: str = "-24h", top: Optional[int] = 10, orden: str = "ingreso",
+                       start_zonas: str = "-24h", top: Optional[int] = 10, orden: str = "puntuacion",
                        pais: Optional[str] = None) -> dict:
     """
-    orden: "ingreso" (ingreso esperado en €/ha; los cultivos sin precio van al
-    final) o "probabilidad" (lo que mejor se da, sin mirar el precio).
+    orden: "puntuacion" (cuota × ventaja, por defecto), "cuota" (lo que más se
+    siembra con ese clima, sin mirar precios) o "ingreso" (ingreso bruto en
+    €/ha: solo como referencia, favorece siempre a los cultivos caros de producir).
 
     Returns {"modelo", "meteomatics_disponible", "eurostat_disponible", "pais", "orden",
     "zonas": [{zona, balizas, centro, variables, fuera_de_rango, cultivos_actuales, cultivos}]}.
     """
-    if orden not in ("ingreso", "probabilidad"):
-        raise ValueError("orden debe ser ingreso o probabilidad")
+    if orden not in ORDER_KEYS:
+        raise ValueError("orden debe ser puntuacion, cuota o ingreso")
     country = country_of(cliente_id, pais)
     zones, registered, meteomatics_ok = zone_conditions(cliente_id, n, balizas, start, start_zonas, regadio=False)
     meta = modelo_europa.model()["meta"]
@@ -61,21 +75,27 @@ def get_recommendation(cliente_id: str, n: int = 1, balizas: Optional[list] = No
             for prediction in modelo_europa.predict(variables):
                 market = price(prediction["id"])
                 gross = None if market is None else prediction["rendimiento_t_ha"] * market["valor"]
+                # Sin precio (o sin referencia europea) la ventaja es solo la del rendimiento.
+                relative_price = market["valor"] / market["europeo"] if market and market["europeo"] else 1.0
+                advantage = prediction["rendimiento_relativo"] * relative_price
                 crops.append({
                     "id": prediction["id"],
                     "cultivo": prediction["cultivo"],
-                    "probabilidad_pct": round(100 * prediction["probabilidad"], 1),
+                    "puntuacion": round(100 * prediction["cuota"] * advantage, 1),
+                    "cuota_pct": round(100 * prediction["cuota"], 1),
+                    "ventaja": round(advantage, 2),
                     "rendimiento_t_ha": round(prediction["rendimiento_t_ha"], 2),
+                    "rendimiento_relativo": round(prediction["rendimiento_relativo"], 2),
                     "precio_eur_t": None if market is None else round(market["valor"]),
+                    "precio_relativo": None if market is None or not market["europeo"] else round(relative_price, 2),
                     "ingreso_bruto_eur_ha": None if gross is None else round(gross),
-                    "ingreso_esperado_eur_ha": None if gross is None else round(gross * prediction["probabilidad"]),
                     "fuente_precio": None if market is None else market["fuente"],
                 })
-            crops.sort(key=lambda c: c["probabilidad_pct"], reverse=True)
-            if orden == "ingreso":
-                # sort es estable: sin precio (-1) al final, por probabilidad.
-                crops.sort(key=lambda c: -1 if c["ingreso_esperado_eur_ha"] is None else c["ingreso_esperado_eur_ha"],
-                           reverse=True)
+            # sort es estable: a igualdad (o sin precio con orden=ingreso) manda la puntuación.
+            crops.sort(key=lambda c: c["puntuacion"], reverse=True)
+            if orden != "puntuacion":
+                key = ORDER_KEYS[orden]
+                crops.sort(key=lambda c: -1 if c[key] is None else c[key], reverse=True)
 
         by_id = {c["id"]: c for c in crops}
         planted = Counter(registered[b]["cultivo_id"] for b in zone["balizas"] if registered[b]["cultivo_id"])

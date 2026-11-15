@@ -6,13 +6,15 @@ rendimientos y superficies por región NUTS2 y año de Eurostat (apro_cpshr,
 2010-2024) con el clima de ese año de NASA POWER en la región. Dos modelos de
 gradient boosting, los dos con el cultivo y nueve variables de clima:
 
-- se_cultiva: probabilidad de que el cultivo se dé con ese clima (en las
-  regiones con ese clima, ¿se cultiva o no?).
+- cuota: qué parte de la tierra dedican a cada cultivo las regiones con ese
+  clima (superficie del cultivo / superficie de los cultivos del modelo). Es
+  lo que hacen de verdad los agricultores, que ya cuentan con los costes, la
+  rotación y el mercado.
 - rendimiento: t/ha esperadas (relativas a la mediana europea del cultivo).
 
 El backend calcula las mismas nueve variables con el último año de la zona
-(balizas + Meteomatics) y ordena los cultivos por ingreso esperado:
-probabilidad × rendimiento × precio de venta (Eurostat).
+(balizas + Meteomatics). El orden lo decide graph/recomendacion.py: la cuota,
+corregida por lo que el cultivo rinde y se paga aquí frente a lo habitual.
 
 El .joblib sale del notebook. Si no está o se guardó con otra versión de
 scikit-learn y no carga, el modelo se entrena aquí al arrancar con el mismo
@@ -51,13 +53,15 @@ _lock = threading.Lock()
 def train(data) -> dict:
     """Los dos modelos a partir del conjunto de datos (DataFrame). Igual que el notebook."""
     import sklearn
-    from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+    from sklearn.ensemble import HistGradientBoostingRegressor
 
     codes = sorted(CULTIVOS)
     data = data.assign(cultivo_cod=data["cultivo"].map(codes.index))
     columns = ["cultivo_cod"] + VARIABLES
-    grown = HistGradientBoostingClassifier(categorical_features=[0], max_iter=300, learning_rate=0.08, random_state=0)
-    grown.fit(data[columns], data["se_cultiva"])
+    # Cuota de superficie de cada cultivo en su región y año (suman 1 entre los cultivos del modelo).
+    share = data["area_kha"] / data.groupby(["region", "anio"])["area_kha"].transform("sum")
+    land_share = HistGradientBoostingRegressor(categorical_features=[0], max_iter=400, learning_rate=0.06, random_state=0)
+    land_share.fit(data[columns], share)
 
     with_yield = data[data["rendimiento_t_ha"].notna()]
     median = with_yield.groupby("cultivo")["rendimiento_t_ha"].median()
@@ -72,7 +76,7 @@ def train(data) -> dict:
         "sklearn": sklearn.__version__,
         "datos": "Eurostat apro_cpshr 2010-2024 (NUTS2) + NASA POWER mensual",
     }
-    return {"se_cultiva": grown, "rendimiento": crop_yield, "meta": meta}
+    return {"cuota": land_share, "rendimiento": crop_yield, "meta": meta}
 
 
 def _load() -> dict:
@@ -84,7 +88,7 @@ def _load() -> dict:
             bundle = joblib.load(MODEL_PATH)
             # Una predicción de prueba: un modelo de otra versión puede cargar y fallar al usarlo.
             probe = pd.DataFrame([[0] + [0.0] * len(VARIABLES)], columns=bundle["meta"]["columnas"])
-            bundle["se_cultiva"].predict_proba(probe)
+            bundle["cuota"].predict(probe)
             bundle["rendimiento"].predict(probe)
             return bundle
         except Exception as e:  # versión distinta de scikit-learn, archivo roto...
@@ -135,22 +139,25 @@ def climate_variables(days: list, temp: np.ndarray, hr: np.ndarray, precip: np.n
 
 
 def predict(variables: dict) -> list:
-    """[{id, cultivo, probabilidad (0-1), rendimiento_t_ha}] de cada cultivo del modelo."""
+    """[{id, cultivo, cuota (0-1, suman 1), rendimiento_t_ha, rendimiento_relativo}] de cada cultivo del modelo."""
     import pandas as pd
 
     bundle = model()
     meta = bundle["meta"]
     rows = [[code] + [variables[v] for v in meta["variables"]] for code in range(len(meta["codigos"]))]
     frame = pd.DataFrame(rows, columns=meta["columnas"])
-    probability = bundle["se_cultiva"].predict_proba(frame)[:, 1]
+    share = np.clip(bundle["cuota"].predict(frame), 0.0, None)
+    share = share / share.sum() if share.sum() > 0 else share
     relative = bundle["rendimiento"].predict(frame)
     result = []
     for i, code in enumerate(meta["codigos"]):
         crop = meta["cultivos"][code]
         result.append({
             "id": crop["id"], "cultivo": crop["nombre"],
-            "probabilidad": float(probability[i]),
+            "cuota": float(share[i]),
             "rendimiento_t_ha": float(max(0.0, relative[i]) * crop["mediana_t_ha"]),
+            # Frente a la mediana europea del cultivo: 1 = lo habitual.
+            "rendimiento_relativo": float(max(0.0, relative[i])),
         })
     return result
 

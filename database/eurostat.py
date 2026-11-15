@@ -54,7 +54,7 @@ def _get(dataset: str, **filters) -> dict:
             return json.loads(response.read().decode())
     except urllib.error.HTTPError as e:
         raise EurostatError(f"Eurostat HTTP {e.code} en {dataset}") from e
-    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+    except (OSError, ValueError) as e:  # URLError, socket.timeout o JSON roto
         raise EurostatError(f"Eurostat no responde ({dataset}): {e}") from e
 
 
@@ -147,12 +147,31 @@ def _lookup(table: dict, codes: list, country: str) -> Optional[dict]:
             period = str(first) if first == last else f"{first}–{last}"
             return {"valor": value, "codigo": code, "fuente": f"Eurostat {country} {period}"}
     for code in codes:
-        means = [m[0] for (c, geo), series in table.items()
-                 if c == code and geo not in _AGGREGATES and (m := _recent_mean(series))]
-        if len(means) >= MIN_COUNTRIES:
-            return {"valor": statistics.median(means), "codigo": code,
-                    "fuente": f"Eurostat, mediana de {len(means)} países (sin dato de {country})"}
+        median = _european_median(table, code)
+        if median is not None:
+            return {"valor": median[0], "codigo": code,
+                    "fuente": f"Eurostat, mediana de {median[1]} países (sin dato de {country})"}
     return None
+
+
+def _european_median(table: dict, code: str) -> Optional[tuple]:
+    """(mediana de las medias recientes de cada país, nº de países) o None si hay pocos."""
+    means = [m[0] for (c, geo), series in table.items()
+             if c == code and geo not in _AGGREGATES and (m := _recent_mean(series))]
+    return (statistics.median(means), len(means)) if len(means) >= MIN_COUNTRIES else None
+
+
+def get_price(country: str, price_codes: list) -> Optional[dict]:
+    """
+    Precio de venta de un cultivo en un país: {valor €/t, codigo, fuente,
+    europeo: mediana europea del mismo producto en €/t (o None)}. Lanza EurostatError.
+    """
+    prices = _tables()["precios"]
+    price = _lookup(prices, price_codes, country)
+    if price is None:
+        return None
+    median = _european_median(prices, price["codigo"])
+    return {**price, "europeo": None if median is None else median[0]}
 
 
 def get_market(country: str, price_codes: list, yield_codes: list) -> dict:

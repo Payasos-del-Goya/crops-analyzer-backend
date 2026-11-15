@@ -16,7 +16,7 @@ Solo tienen datos los cultivos que Eurostat publica; el resto sale con
 """
 from typing import Optional
 
-from database.eurostat import get_market
+from database.eurostat import get_market, get_price
 
 # id de la tabla `cultivos` -> (códigos de precio apri_ap_crpouta, códigos de cultivo apro_cpsh1).
 # Con varios códigos se usa el primero que tenga dato.
@@ -81,11 +81,11 @@ EUROSTAT_CODES = {
 
 
 def crop_price(crop_id, country: str) -> Optional[dict]:
-    """Precio de venta {valor €/t, codigo, fuente} de un cultivo, o None si Eurostat no lo publica."""
+    """Precio de venta {valor €/t, codigo, fuente, europeo €/t} de un cultivo, o None si Eurostat no lo publica."""
     codes = EUROSTAT_CODES.get(crop_id)
     if codes is None:
         return None
-    return get_market(country, codes[0], [])["precio"]
+    return get_price(country, codes[0])
 
 
 def crop_economics(crop_id, percent: Optional[float], country: str) -> Optional[dict]:

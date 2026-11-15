@@ -187,16 +187,18 @@ def get_idoneidad(n: int = 1, balizas: Optional[str] = None, start: str = "-365d
 
 @app.get("/recomendacion")
 def get_recomendacion(n: int = 1, balizas: Optional[str] = None, start: str = "-365d",
-                      start_zonas: str = "-24h", top: int = 10, orden: str = "ingreso",
+                      start_zonas: str = "-24h", top: int = 10, orden: str = "puntuacion",
                       pais: Optional[str] = None, session: dict = Depends(current_session)):
     """
     Cultivos recomendados por zona con el modelo entrenado (Eurostat + NASA POWER,
-    modelo_predicciones/modelo_europa.py): probabilidad de que el cultivo se dé con
-    el clima de la zona, rendimiento previsto e ingreso por hectárea con el precio
-    de venta de Eurostat.
+    modelo_predicciones/modelo_europa.py): qué parte de la tierra se dedica a cada
+    cultivo con el clima de la zona (cuota) y su rendimiento previsto, con el
+    precio de venta de Eurostat.
 
     - balizas, n, start, start_zonas: como en /idoneidad.
-    - orden: "ingreso" (probabilidad × rendimiento × precio, por defecto) o "probabilidad".
+    - orden: "puntuacion" (por defecto: cuota × lo que el cultivo rinde y se paga aquí
+      frente a lo habitual en Europa), "cuota" o "ingreso" (ingreso bruto en €/ha,
+      solo como referencia: sin costes favorece siempre a la patata).
     - top: cultivos por zona (0 = todos los del modelo).
     - pais: código de Eurostat para los precios (por defecto, el del cliente).
     """
