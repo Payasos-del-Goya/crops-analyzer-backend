@@ -1,22 +1,27 @@
 # main.py
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from config import influxdb_client, INFLUX_BUCKET, INFLUX_ORG, SessionLocal
 from database.get_baliza_network import get_baliza_network
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-
-from endpoints.balizas import retrieve_balizas_basic_info
+from pydantic import BaseModel
+from endpoints.balizas import create_baliza, retrieve_balizas_basic_info
 from endpoints.crops import retrieve_crops_basic_info, retrieve_crops_data
 
 app = FastAPI()
 
-# Dependency to get PostgreSQL session safely per request
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+class BalizaCreate(BaseModel):
+    id: str
+    latitud: float
+    longitud: float
+    cultivo_id: int
 
 @app.get("/")
 def read_root():
@@ -79,3 +84,20 @@ def get_balizas_info():
         "count": len(balizas_list),
         "crops": balizas_list
     }
+
+@app.post("/balizas")
+def add_baliza(baliza: BalizaCreate):
+    try:
+        create_baliza(
+            id=baliza.id,
+            latitud=baliza.latitud,
+            longitud=baliza.longitud,
+            cultivo_id=baliza.cultivo_id
+        )
+        return {
+            "status": "success",
+            "message": f"Baliza '{baliza.id}' creada correctamente.",
+            "data": baliza
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error al crear la baliza: {str(e)}")
