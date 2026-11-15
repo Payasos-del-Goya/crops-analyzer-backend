@@ -18,7 +18,8 @@ INFLUX_BUCKET_ESTADO = os.getenv("INFLUX_BUCKET_ESTADO", "c001_estado")
 # Resultados de los checks de Icinga2 (UP/DOWN de cada baliza). Si el token
 # principal no puede leer este bucket, se puede dar uno aparte.
 INFLUX_BUCKET_ICINGA = os.getenv("INFLUX_BUCKET_ICINGA", "icinga")
-INFLUX_ICINGA_TOKEN = os.getenv("INFLUX_ICINGA_TOKEN")
+# Token de solo lectura del bucket `icinga` (creado para este backend).
+INFLUX_ICINGA_TOKEN = os.getenv("INFLUX_ICINGA_TOKEN", "KUllDYecIlYYmJEGrp-pUFdqCff1cvFmfepETBYrizBPQn3IhdUfQeWrSj4vvfVs8GAGJLLGCywr5FdgL79fMg==")
 
 # Cliente al que se asignan las balizas creadas por POST /balizas (demo).
 DEMO_CLIENTE_ID = os.getenv("DEMO_CLIENTE_ID", "c001")
