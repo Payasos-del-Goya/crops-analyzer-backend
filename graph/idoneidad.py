@@ -11,6 +11,9 @@ Idoneidad de cultivos por grupos de balizas con el sistema de reglas.
    el viento y las horas de frío salen siempre de Meteomatics.
 3. Cada cultivo de la tabla `cultivos` se puntúa con las reglas de
    modelo_predicciones/reglas_idoneidad.py.
+4. A cada cultivo se le añade el ingreso por hectárea (precio × rendimiento
+   medios del país, de Eurostat; modelo_predicciones/rentabilidad.py) y la
+   lista se puede ordenar por idoneidad o por ingreso esperado.
 """
 import logging
 from collections import Counter
@@ -19,6 +22,8 @@ from typing import Optional
 
 import numpy as np
 
+from config import CLIENTE_PAIS, PAIS_POR_DEFECTO
+from database.eurostat import EurostatError
 from database.get_zone_series import get_zone_series
 from database.meteomatics import MeteomaticsError, get_climate_year
 from endpoints.balizas import retrieve_balizas_basic_info
@@ -26,11 +31,14 @@ from endpoints.crops import retrieve_crops_data
 from graph.graphIF import get_balizas_data, order_data
 from graph.graphManager import GraphManager
 from modelo_predicciones.reglas_idoneidad import WIND_10M_TO_2M, evaluate_crop, smi_from_volumetric
+from modelo_predicciones.rentabilidad import crop_economics
 
 logger = logging.getLogger(__name__)
 
 # Días recientes para la humedad del suelo de Meteomatics (si no hay sondas).
 SMI_RECENT_DAYS = 30
+# Con orden="ingreso": % mínimo de idoneidad para que un cultivo entre en la lista.
+DEFAULT_MIN_PERCENT_BY_INCOME = 50.0
 
 
 def split_zones(cliente_id: str, balizas: list[dict], n: int, start: str, k: int = 2) -> list[list[str]]:
@@ -143,13 +151,44 @@ def _summary(conditions: dict) -> dict:
 
 def get_suitability(cliente_id: str, n: int = 1, balizas: Optional[list[str]] = None,
                     start: str = "-365d", start_zonas: str = "-24h", cultivos: Optional[list[int]] = None,
-                    top: Optional[int] = 10, regadio: bool = False) -> dict:
+                    top: Optional[int] = 10, regadio: bool = False, orden: str = "idoneidad",
+                    min_porcentaje: Optional[float] = None, pais: Optional[str] = None) -> dict:
     """
     % de acercamiento de cada zona a los cultivos ideales.
 
-    Returns {"meteomatics_disponible": bool, "zonas": [{zona, balizas, centro,
-    textura_suelo, condiciones, cultivos_actuales, cultivos}]}.
+    orden: "idoneidad" (por % de encaje) o "ingreso" (por ingreso esperado en
+    €/ha; los cultivos sin precio en Eurostat van al final). min_porcentaje deja
+    fuera los cultivos que encajan menos que eso (por defecto 50 con
+    orden="ingreso": que un cultivo se pague bien no sirve si no se da).
+    pais: código de Eurostat (ES, IE, NO...) para precios y rendimientos; por
+    defecto, el del cliente.
+
+    Returns {"meteomatics_disponible": bool, "eurostat_disponible": bool, "pais",
+    "orden", "zonas": [{zona, balizas, centro, textura_suelo, condiciones,
+    cultivos_actuales, cultivos}]}.
     """
+    if orden not in ("idoneidad", "ingreso"):
+        raise ValueError("orden debe ser idoneidad o ingreso")
+    if min_porcentaje is None:
+        min_porcentaje = DEFAULT_MIN_PERCENT_BY_INCOME if orden == "ingreso" else 0.0
+    country = (pais or CLIENTE_PAIS.get(cliente_id, PAIS_POR_DEFECTO)).upper()
+    if not country.isalpha() or len(country) != 2:
+        raise ValueError("pais debe ser un código de dos letras (ES, IE, NO...)")
+    eurostat = {"ok": True}
+
+    def with_economics(score: dict) -> dict:
+        economics = None
+        if eurostat["ok"]:
+            try:
+                economics = crop_economics(score["id"], score["porcentaje"], country)
+            except EurostatError as e:
+                logger.warning("Sin datos de Eurostat: %s", e)
+                eurostat["ok"] = False
+        return {**score, "economia": economics}
+
+    def income(score: dict) -> float:
+        economics = score["economia"]
+        return -1.0 if not economics or economics["ingreso_esperado_eur_ha"] is None else economics["ingreso_esperado_eur_ha"]
     registered = {b["id"]: b for b in retrieve_balizas_basic_info(cliente_id)}
     if balizas:
         unknown = sorted(set(balizas) - set(registered))
@@ -160,7 +199,8 @@ def get_suitability(cliente_id: str, n: int = 1, balizas: Optional[list[str]] = 
         chosen = list(registered.values())
     chosen = [b for b in chosen if b["latitud"] is not None and b["longitud"] is not None]
     if not chosen:
-        return {"meteomatics_disponible": None, "zonas": []}
+        return {"meteomatics_disponible": None, "eurostat_disponible": None, "pais": country,
+                "orden": orden, "zonas": []}
 
     zones = split_zones(cliente_id, chosen, n, start_zonas)
 
@@ -189,7 +229,7 @@ def get_suitability(cliente_id: str, n: int = 1, balizas: Optional[list[str]] = 
 
         series = get_zone_series(cliente_id, ids, start=start)
         conditions = build_conditions(series, climate, texture, regadio)
-        scores = [evaluate_crop(crop, conditions) for crop in crops]
+        scores = [with_economics(evaluate_crop(crop, conditions)) for crop in crops]
         scores.sort(key=lambda s: -1 if s["porcentaje"] is None else s["porcentaje"], reverse=True)
 
         # Cómo le va a lo que ya está plantado en esas balizas.
@@ -198,10 +238,17 @@ def get_suitability(cliente_id: str, n: int = 1, balizas: Optional[list[str]] = 
         for crop_id, count in planted.most_common():
             score = next((s for s in scores if s["id"] == crop_id), None)
             if score is None and crop_id in crops_by_id:
-                score = evaluate_crop(crops_by_id[crop_id], conditions)
+                score = with_economics(evaluate_crop(crops_by_id[crop_id], conditions))
             if score is not None:
                 current.append({"id": crop_id, "cultivo": score["cultivo"], "balizas": count,
-                                "porcentaje": score["porcentaje"], "limitante": score["limitante"]})
+                                "porcentaje": score["porcentaje"], "limitante": score["limitante"],
+                                "economia": score["economia"]})
+
+        # La lista recomendada: lo que encaja lo bastante, en el orden pedido
+        # (sort es estable: a igual ingreso manda la idoneidad).
+        ranked = [s for s in scores if (s["porcentaje"] or 0) >= min_porcentaje]
+        if orden == "ingreso":
+            ranked.sort(key=income, reverse=True)
 
         result.append({
             "zona": label,
@@ -211,7 +258,8 @@ def get_suitability(cliente_id: str, n: int = 1, balizas: Optional[list[str]] = 
             "horas_influx": series["horas"],
             "condiciones": _summary(conditions),
             "cultivos_actuales": current,
-            "cultivos": scores[:top] if top else scores,
+            "cultivos": ranked[:top] if top else ranked,
         })
 
-    return {"meteomatics_disponible": meteomatics_ok, "zonas": result}
+    return {"meteomatics_disponible": meteomatics_ok, "eurostat_disponible": eurostat["ok"],
+            "pais": country, "orden": orden, "zonas": result}

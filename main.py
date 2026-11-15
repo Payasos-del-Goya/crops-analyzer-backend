@@ -152,7 +152,9 @@ async def ws_monitor(ws: WebSocket):
 @app.get("/idoneidad")
 def get_idoneidad(n: int = 1, balizas: Optional[str] = None, start: str = "-365d",
                   start_zonas: str = "-24h", cultivos: Optional[str] = None, top: int = 10,
-                  regadio: bool = False, session: dict = Depends(current_session)):
+                  regadio: bool = False, orden: str = "idoneidad",
+                  min_porcentaje: Optional[float] = None, pais: Optional[str] = None,
+                  session: dict = Depends(current_session)):
     """
     % de acercamiento de un conjunto de balizas a las condiciones ideales de cada
     cultivo, con un sistema de reglas (graph/idoneidad.py).
@@ -164,6 +166,10 @@ def get_idoneidad(n: int = 1, balizas: Optional[str] = None, start: str = "-365d
     - cultivos: ids de cultivo separados por comas (por defecto, todos).
     - top: cultivos por zona en la respuesta (0 = todos).
     - regadio: si es True la lluvia anual no cuenta.
+    - orden: "idoneidad" (por defecto) o "ingreso": por ingreso esperado en €/ha
+      (precio × rendimiento medios del país, de Eurostat, × % de idoneidad).
+    - min_porcentaje: deja fuera los cultivos que encajan menos (50 por defecto con orden=ingreso).
+    - pais: código de Eurostat para precios y rendimientos (por defecto, el del cliente).
     """
     try:
         baliza_ids = [b.strip() for b in balizas.split(",") if b.strip()] if balizas else None
@@ -171,7 +177,8 @@ def get_idoneidad(n: int = 1, balizas: Optional[str] = None, start: str = "-365d
         if n < 1:
             raise ValueError("n debe ser al menos 1")
         data = get_suitability(session["cliente_id"], n=n, balizas=baliza_ids, start=start,
-                               start_zonas=start_zonas, cultivos=cultivo_ids, top=top, regadio=regadio)
+                               start_zonas=start_zonas, cultivos=cultivo_ids, top=top, regadio=regadio,
+                               orden=orden, min_porcentaje=min_porcentaje, pais=pais)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     return {"status": "success", **data}
