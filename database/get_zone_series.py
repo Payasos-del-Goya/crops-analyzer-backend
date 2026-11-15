@@ -27,7 +27,7 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 def get_zone_series(cliente_id: str, balizas: list[str], start: str = "-365d") -> dict:
     """
-    {"diario": {fecha: {"temp_media", "temp_min", "hr", "dli"}},
+    {"diario": {fecha: {"temp_media", "temp_min", "hr", "dli", "humedad_vol"}},
      "suelo": {"ph", "conductividad", "humedad_vol"}: media del periodo o None,
      "horas": nº de horas con dato}
     """
@@ -72,6 +72,8 @@ def get_zone_series(cliente_id: str, balizas: list[str], start: str = "-365d") -
         daily[d]["temp_min"] = min(vs)
     for d, vs in per_day("hr").items():
         daily[d]["hr"] = sum(vs) / len(vs)
+    for d, vs in per_day("humedad_vol").items():
+        daily[d]["humedad_vol"] = sum(vs) / len(vs)
     for d, vs in per_day("luz_lux").items():
         # DLI (mol m⁻² d⁻¹) = PPFD medio × 86400 s / 10⁶
         daily[d]["dli"] = sum(vs) / len(vs) * LUX_TO_PPFD * 86400 / 1e6

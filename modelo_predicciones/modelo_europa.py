@@ -4,8 +4,9 @@ Modelo de recomendación entrenado con datos reales de Europa.
 Datos de entrenamiento (modelo_predicciones/entrenar_modelo_europa.ipynb):
 rendimientos y superficies por región NUTS2 y año de Eurostat (apro_cpshr,
 2010-2024) con el clima de ese año de NASA POWER en la región (temperatura y
-lluvia de cada estación, radiación, humedad relativa) y el pH del suelo de la
-región de SoilGrids. Dos modelos de gradient boosting:
+lluvia de cada estación, radiación, humedad relativa), la humedad del suelo de
+verano y otoño (NASA POWER) y el pH del suelo de la región de SoilGrids. Dos
+modelos de gradient boosting:
 
 - cuota: qué parte de la tierra dedican a cada cultivo las regiones con ese
   clima (superficie del cultivo / superficie de los cultivos del modelo). Es
@@ -14,8 +15,8 @@ región de SoilGrids. Dos modelos de gradient boosting:
 - rendimiento: t/ha esperadas (relativas a la mediana europea del cultivo).
 
 El backend calcula las mismas variables con el último año de la zona (balizas +
-Meteomatics) y el pH que miden las balizas (sin pH el modelo sigue funcionando:
-admite huecos). El orden lo decide graph/recomendacion.py: la cuota,
+Meteomatics) y el pH y la humedad del suelo que miden las balizas (sin esos
+datos el modelo sigue funcionando: admite huecos). El orden lo decide graph/recomendacion.py: la cuota,
 corregida por lo que el cultivo rinde y se paga aquí frente a lo habitual.
 
 El .joblib sale del notebook. Si no está o se guardó con otra versión de
@@ -48,8 +49,14 @@ CULTIVOS = {
 SEASONS = {"invierno": [12, 1, 2], "primavera": [3, 4, 5], "verano": [6, 7, 8], "otono": [9, 10, 11]}
 CLIMATE_VARIABLES = ([f"t_{s}" for s in SEASONS] + [f"lluvia_{s}_mm" for s in SEASONS]
                      + ["radiacion_primavera_mj_dia", "radiacion_verano_mj_dia", "hr_media"])
-# El pH del suelo solo entra en la cuota: en el rendimiento no mejora la predicción.
-VARIABLES = CLIMATE_VARIABLES + ["ph_suelo"]
+# Suelo: pH y humedad de la zona de raíces en verano y otoño (0 = seco, 1 = saturado).
+# Solo entra en la cuota: en el rendimiento no mejora la predicción.
+SOIL_VARIABLES = ["ph_suelo", "humedad_suelo_verano", "humedad_suelo_otono"]
+VARIABLES = CLIMATE_VARIABLES + SOIL_VARIABLES
+# Porosidad típica por textura: pasa la humedad volumétrica de las sondas a la
+# escala del entrenamiento (fracción de saturación, como GWETROOT de NASA POWER).
+POROSITY = {"arenoso": 0.40, "franco": 0.45, "arcilloso": 0.50}
+MIN_DAYS_PER_SEASON = 45  # días con dato para dar la humedad del suelo de una estación
 MIN_DAYS_PER_MONTH = 15  # días con dato para dar la media de un mes
 
 _bundle: Optional[dict] = None
@@ -81,7 +88,7 @@ def train(data) -> dict:
         "cultivos": {c: {"id": CULTIVOS[c][0], "nombre": CULTIVOS[c][1], "mediana_t_ha": float(median[c])} for c in codes},
         "rangos_entrenamiento": {v: [float(data[v].quantile(0.01)), float(data[v].quantile(0.99))] for v in VARIABLES},
         "sklearn": sklearn.__version__,
-        "datos": "Eurostat apro_cpshr 2010-2024 (NUTS2) + NASA POWER mensual + SoilGrids pH",
+        "datos": "Eurostat apro_cpshr 2010-2024 (NUTS2) + NASA POWER mensual (clima y humedad del suelo) + SoilGrids pH",
     }
     return {"cuota": land_share, "rendimiento": crop_yield, "meta": meta}
 
@@ -148,6 +155,24 @@ def climate_variables(days: list, temp: np.ndarray, hr: np.ndarray, precip: np.n
     for season in ("primavera", "verano"):
         variables[f"radiacion_{season}_mj_dia"] = sum(r[m] for m in SEASONS[season]) / 3
     variables["hr_media"] = sum(h.values()) / 12
+    return variables
+
+
+def wetness(volumetric_pct: Optional[float], texture: Optional[str]) -> Optional[float]:
+    """Humedad volumétrica (%) -> fracción de saturación (0-1) con la porosidad típica de la textura."""
+    if volumetric_pct is None:
+        return None
+    return float(min(1.0, max(0.0, volumetric_pct / 100 / POROSITY.get(texture or "franco", POROSITY["franco"]))))
+
+
+def soil_wetness_variables(days: list, daily_wetness: np.ndarray) -> dict:
+    """Humedad del suelo media de verano y de otoño (None si hay pocos días con dato)."""
+    months = np.array([d.month for d in days])
+    variables = {}
+    for season in ("verano", "otono"):
+        values = daily_wetness[np.isin(months, SEASONS[season])]
+        values = values[~np.isnan(values)]
+        variables[f"humedad_suelo_{season}"] = float(values.mean()) if len(values) >= MIN_DAYS_PER_SEASON else None
     return variables
 
 

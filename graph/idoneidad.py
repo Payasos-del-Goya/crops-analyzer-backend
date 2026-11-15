@@ -30,7 +30,8 @@ from endpoints.balizas import retrieve_balizas_basic_info
 from endpoints.crops import retrieve_crops_data
 from graph.graphIF import get_balizas_data, order_data
 from graph.graphManager import GraphManager
-from modelo_predicciones.reglas_idoneidad import WIND_10M_TO_2M, evaluate_crop, smi_from_volumetric
+from modelo_predicciones.modelo_europa import wetness
+from modelo_predicciones.reglas_idoneidad import SOIL_WATER, WIND_10M_TO_2M, evaluate_crop, smi_from_volumetric
 from modelo_predicciones.rentabilidad import crop_economics
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,21 @@ def build_conditions(series: dict, climate: Optional[dict], texture: Optional[st
     nan_series = [None] * len(days)
     conditions["precip_mm"] = np.array([np.nan if v is None else v for v in meteo.get("precip_mm", nan_series)], dtype=float)
     conditions["radiacion_mj"] = np.array([np.nan if v is None else v / 1e6 for v in meteo.get("radiacion_j", nan_series)], dtype=float)
+    # Humedad del suelo diaria como fracción de saturación (escala del modelo entrenado): la de las
+    # sondas si ese día hay dato y, si no, la de Meteomatics (SMI -> % volumétrico con la textura).
+    field_capacity, wilting_point = SOIL_WATER.get(texture or "franco", SOIL_WATER["franco"])
+    soil_moisture, from_probes = [], 0
+    for i, day in enumerate(days):
+        volumetric = series["diario"].get(day, {}).get("humedad_vol")
+        if volumetric is not None:
+            from_probes += 1
+        else:
+            smi = meteo.get("smi", nan_series)[i]
+            volumetric = None if smi is None else wilting_point + smi * (field_capacity - wilting_point)
+        value = wetness(volumetric, texture)
+        soil_moisture.append(np.nan if value is None else value)
+    conditions["humedad_suelo"] = np.array(soil_moisture, dtype=float)
+    conditions["fuentes"]["humedad_suelo"] = _source(from_probes, int(np.sum(~np.isnan(conditions["humedad_suelo"]))) - from_probes)
     conditions["horas_frio"] = climate["horas_frio"] if climate is not None else None
     conditions["fuentes"]["horas_frio"] = "meteomatics" if climate is not None else None
 

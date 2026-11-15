@@ -3,8 +3,8 @@ Recomendación de cultivos por zonas con el modelo entrenado (modelo_europa.py).
 
 Las zonas y sus condiciones salen igual que en la idoneidad (graph/idoneidad.py):
 balizas partidas con SKATER, último año de las balizas (InfluxDB) completado con
-Meteomatics. Con eso se calculan las variables del modelo (clima de cada estación
-y pH del suelo de las balizas), que da para cada cultivo su cuota (qué parte de la tierra le dedican las regiones con ese
+Meteomatics. Con eso se calculan las variables del modelo (clima de cada estación,
+pH y humedad del suelo de las balizas), que da para cada cultivo su cuota (qué parte de la tierra le dedican las regiones con ese
 clima) y su rendimiento.
 
 El orden no es el ingreso por hectárea: sin costes no se pueden comparar
@@ -85,6 +85,7 @@ def get_recommendation(cliente_id: str, n: int = 1, balizas: Optional[list] = No
         crops = []
         if variables is not None:
             variables["ph_suelo"] = conditions["ph"]  # el que miden las balizas de la zona (None si no hay)
+            variables.update(modelo_europa.soil_wetness_variables(conditions["dias"], conditions["humedad_suelo"]))
             for prediction in modelo_europa.predict(variables):
                 market = price(prediction["id"])
                 gross = None if market is None else prediction["rendimiento_t_ha"] * market["valor"]
@@ -127,7 +128,10 @@ def get_recommendation(cliente_id: str, n: int = 1, balizas: Optional[list] = No
             "zona": label,
             "balizas": zone["balizas"],
             "centro": zone["centro"],
-            "variables": None if variables is None else {k: None if v is None else round(v, 1) for k, v in variables.items()},
+            "variables": None if variables is None else {
+                k: None if v is None else round(v, 2 if k.startswith("humedad_suelo") else 1) for k, v in variables.items()},
+            # De dónde sale la humedad del suelo (días de sondas y días de Meteomatics).
+            "fuente_humedad_suelo": conditions["fuentes"].get("humedad_suelo"),
             # Variables fuera de lo visto al entrenar: ahí el modelo extrapola.
             "fuera_de_rango": [] if variables is None else modelo_europa.out_of_range(variables),
             "cultivos_actuales": current,
