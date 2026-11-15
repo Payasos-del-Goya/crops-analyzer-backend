@@ -1,7 +1,7 @@
 # main.py
 from typing import Optional
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from config import influxdb_client, INFLUX_BUCKET, INFLUX_ORG, SessionLocal
 from database.get_baliza_network import get_baliza_network
 from database.get_latest_readings import get_latest_readings
@@ -10,6 +10,7 @@ from sqlalchemy import text
 from pydantic import BaseModel
 from endpoints.balizas import create_baliza, retrieve_balizas_basic_info
 from endpoints.crops import retrieve_crops_basic_info, retrieve_crops_data
+from realtime import MonitorHub
 
 app = FastAPI()
 
@@ -59,14 +60,8 @@ def get_baliza_data(start: str = "-30m", period: str = "5m", dispositivo: str = 
     }
 
 
-@app.get("/monitor")
-def get_monitor(start: str = "-24h", dispositivo: Optional[str] = None):
-    """Última lectura (suelo, atmósfera y estado) de cada baliza en InfluxDB."""
-    try:
-        dispositivos, icinga_ok = get_latest_readings(start=start, dispositivo=dispositivo)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-
+def monitor_snapshot(start: str = "-24h", dispositivo: Optional[str] = None) -> dict:
+    dispositivos, icinga_ok = get_latest_readings(start=start, dispositivo=dispositivo)
     return {
         "status": "success",
         "count": len(dispositivos),
@@ -74,6 +69,31 @@ def get_monitor(start: str = "-24h", dispositivo: Optional[str] = None):
         "icinga_disponible": icinga_ok,
         "dispositivos": dispositivos,
     }
+
+
+@app.get("/monitor")
+def get_monitor(start: str = "-24h", dispositivo: Optional[str] = None):
+    """Última lectura (suelo, atmósfera y estado) de cada baliza en InfluxDB."""
+    try:
+        return monitor_snapshot(start=start, dispositivo=dispositivo)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+monitor_hub = MonitorHub(monitor_snapshot)
+
+
+@app.websocket("/ws/monitor")
+async def ws_monitor(ws: WebSocket):
+    """Lo mismo que GET /monitor, pero empujado al cliente cada vez que cambia."""
+    await monitor_hub.connect(ws)
+    try:
+        while True:
+            await ws.receive_text()  # solo para detectar la desconexión
+    except WebSocketDisconnect:
+        pass
+    finally:
+        monitor_hub.disconnect(ws)
 
 
 @app.get("/crops")
