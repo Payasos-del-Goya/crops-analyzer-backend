@@ -23,11 +23,13 @@ dato, no como criterio.
 """
 import logging
 from collections import Counter
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from database.eurostat import EurostatError
 from graph.idoneidad import country_of, zone_conditions
 from modelo_predicciones import modelo_europa
+from modelo_predicciones.calendario import sowing
 from modelo_predicciones.rentabilidad import crop_price
 
 logger = logging.getLogger(__name__)
@@ -38,17 +40,27 @@ ORDER_KEYS = {"puntuacion": "puntuacion", "cuota": "cuota_pct", "ingreso": "ingr
 
 def get_recommendation(cliente_id: str, n: int = 1, balizas: Optional[list] = None, start: str = "-365d",
                        start_zonas: str = "-24h", top: Optional[int] = 10, orden: str = "puntuacion",
-                       pais: Optional[str] = None) -> dict:
+                       pais: Optional[str] = None, fecha: Optional[str] = None, epoca: str = "primero") -> dict:
     """
     orden: "puntuacion" (cuota × ventaja, por defecto), "cuota" (lo que más se
     siembra con ese clima, sin mirar precios) o "ingreso" (ingreso bruto en
     €/ha: solo como referencia, favorece siempre a los cultivos caros de producir).
 
-    Returns {"modelo", "meteomatics_disponible", "eurostat_disponible", "pais", "orden",
+    fecha: día de la consulta (AAAA-MM-DD, por defecto hoy) para saber qué toca
+    sembrar. epoca: "primero" (los cultivos en época de siembra van delante, en
+    el orden pedido), "solo" (solo esos) o "todas" (no se mira la fecha).
+
+    Returns {"modelo", "meteomatics_disponible", "eurostat_disponible", "pais", "orden", "fecha", "epoca",
     "zonas": [{zona, balizas, centro, variables, fuera_de_rango, cultivos_actuales, cultivos}]}.
     """
     if orden not in ORDER_KEYS:
         raise ValueError("orden debe ser puntuacion, cuota o ingreso")
+    if epoca not in ("primero", "solo", "todas"):
+        raise ValueError("epoca debe ser primero, solo o todas")
+    try:
+        today = date.fromisoformat(fecha) if fecha else datetime.now(timezone.utc).date()
+    except ValueError:
+        raise ValueError("fecha debe ser AAAA-MM-DD")
     country = country_of(cliente_id, pais)
     zones, registered, meteomatics_ok = zone_conditions(cliente_id, n, balizas, start, start_zonas, regadio=False)
     meta = modelo_europa.model()["meta"]
@@ -91,6 +103,8 @@ def get_recommendation(cliente_id: str, n: int = 1, balizas: Optional[list] = No
                     "precio_relativo": None if market is None or not market["europeo"] else round(relative_price, 2),
                     "ingreso_bruto_eur_ha": None if gross is None else round(gross),
                     "fuente_precio": None if market is None else market["fuente"],
+                    # Cuándo se siembra en la zona y si toca ahora (None: sin calendario de ese cultivo).
+                    "siembra": sowing(prediction["id"], zone["centro"]["latitud"], zone["centro"]["longitud"], today),
                 })
             # sort es estable: a igualdad (o sin precio con orden=ingreso) manda la puntuación.
             crops.sort(key=lambda c: c["puntuacion"], reverse=True)
@@ -98,7 +112,12 @@ def get_recommendation(cliente_id: str, n: int = 1, balizas: Optional[list] = No
                 key = ORDER_KEYS[orden]
                 crops.sort(key=lambda c: -1 if c[key] is None else c[key], reverse=True)
 
-        by_id = {c["id"]: c for c in crops}
+        by_id = {c["id"]: c for c in crops}  # antes de filtrar por época: lo plantado sale siempre
+        in_season = lambda c: bool(c["siembra"] and c["siembra"]["en_epoca"])  # noqa: E731
+        if epoca == "solo":
+            crops = [c for c in crops if in_season(c)]
+        elif epoca == "primero":
+            crops.sort(key=in_season, reverse=True)  # estable: dentro de cada grupo, el orden pedido
         planted = Counter(registered[b]["cultivo_id"] for b in zone["balizas"] if registered[b]["cultivo_id"])
         current = [{**by_id[crop_id], "balizas": count} if crop_id in by_id
                    else {"id": crop_id, "balizas": count, "fuera_del_modelo": True}
@@ -122,5 +141,7 @@ def get_recommendation(cliente_id: str, n: int = 1, balizas: Optional[list] = No
         "eurostat_disponible": eurostat["ok"],
         "pais": country,
         "orden": orden,
+        "fecha": today.isoformat(),
+        "epoca": epoca,
         "zonas": result,
     }

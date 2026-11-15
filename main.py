@@ -188,7 +188,8 @@ def get_idoneidad(n: int = 1, balizas: Optional[str] = None, start: str = "-365d
 @app.get("/recomendacion")
 def get_recomendacion(n: int = 1, balizas: Optional[str] = None, start: str = "-365d",
                       start_zonas: str = "-24h", top: int = 10, orden: str = "puntuacion",
-                      pais: Optional[str] = None, session: dict = Depends(current_session)):
+                      pais: Optional[str] = None, fecha: Optional[str] = None, epoca: str = "primero",
+                      session: dict = Depends(current_session)):
     """
     Cultivos recomendados por zona con el modelo entrenado (Eurostat + NASA POWER,
     modelo_predicciones/modelo_europa.py): qué parte de la tierra se dedica a cada
@@ -201,13 +202,18 @@ def get_recomendacion(n: int = 1, balizas: Optional[str] = None, start: str = "-
       solo como referencia: sin costes favorece siempre a la patata).
     - top: cultivos por zona (0 = todos los del modelo).
     - pais: código de Eurostat para los precios (por defecto, el del cliente).
+    - fecha: día de la consulta, AAAA-MM-DD (por defecto hoy). Cada cultivo lleva su época
+      de siembra en la zona (calendario GGCMI) y si toca sembrarlo en esa fecha.
+    - epoca: "primero" (por defecto: los cultivos en época de siembra van delante),
+      "solo" (solo esos) o "todas" (sin mirar la fecha).
     """
     try:
         baliza_ids = [b.strip() for b in balizas.split(",") if b.strip()] if balizas else None
         if n < 1:
             raise ValueError("n debe ser al menos 1")
         data = get_recommendation(session["cliente_id"], n=n, balizas=baliza_ids, start=start,
-                                  start_zonas=start_zonas, top=top, orden=orden, pais=pais)
+                                  start_zonas=start_zonas, top=top, orden=orden, pais=pais,
+                                  fecha=fecha, epoca=epoca)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     return {"status": "success", **data}
