@@ -1,6 +1,6 @@
-from config import influxdb_client, INFLUX_BUCKET, INFLUX_ORG
+from config import influxdb_client, bucket_campo, INFLUX_ORG
 
-def get_baliza_network(start_date: str = "-24h", end_date: str = "now()", period: str = "1h", dispositivo: str = None):
+def get_baliza_network(cliente_id: str, start_date: str = "-24h", end_date: str = "now()", period: str = "1h", dispositivo: str = None):
     """
     Constructs and executes a Flux query for InfluxDB using global connection configs.
     """
@@ -8,7 +8,7 @@ def get_baliza_network(start_date: str = "-24h", end_date: str = "now()", period
     device_filter = f' and r["dispositivo"] == "{dispositivo}"' if dispositivo else ""
 
     query = f'''
-        from(bucket: "{INFLUX_BUCKET}")
+        from(bucket: "{bucket_campo(cliente_id)}")
           |> range(start: {start_date}, stop: {end_date})
           |> filter(fn: (r) => r["_measurement"] == "suelo"{device_filter})
           |> aggregateWindow(every: {period}, fn: mean, createEmpty: false)
