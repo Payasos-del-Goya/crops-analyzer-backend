@@ -40,7 +40,7 @@ class GraphManager:
         return np.column_stack([x, y])
 
     @staticmethod
-    def create_graph(positions, k=2):
+    def create_graph(positions, k=4):
         """
         Grafo de adyacencia entre balizas: cada una se une a sus k vecinas más
         cercanas y, además, se añaden las aristas del árbol de expansión mínima
