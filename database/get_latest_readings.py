@@ -15,6 +15,7 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+_icinga_warned = False
 
 # El host check de las balizas lo escribe Icinga2 con measurement = su
 # check_command, que ha cambiado (fieldshift-baliza → fieldshift-baliza-vida).
@@ -56,7 +57,14 @@ def _query_icinga(dispositivo: Optional[str]):
     try:
         return client.query_api().query(query=query, org=INFLUX_ORG)
     except ApiException as e:
-        logger.warning("No se puede leer el bucket de Icinga (%s): %s", INFLUX_BUCKET_ICINGA, e.status)
+        global _icinga_warned
+        if not _icinga_warned:  # una vez, no en cada consulta del WebSocket
+            _icinga_warned = True
+            logger.warning(
+                "Sin acceso al bucket '%s' de InfluxDB (HTTP %s): el panel no mostrará "
+                "UP/DOWN. Define INFLUX_ICINGA_TOKEN (token de solo lectura de ese bucket) en .env",
+                INFLUX_BUCKET_ICINGA, e.status,
+            )
         return None
 
 

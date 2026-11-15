@@ -4,9 +4,11 @@ import influxdb_client
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-# Optional: Load from a .env file if you use python-dotenv
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+
+# Variables de un fichero .env junto al código (ver .env.example).
+# Las del entorno tienen prioridad sobre las del fichero.
+load_dotenv()
 
 INFLUX_URL = os.getenv("INFLUX_URL", "http://10.42.0.1:8086")
 INFLUX_TOKEN = os.getenv("INFLUX_TOKEN", "rY1fmYQWDkTofiYVpqCu21jkgAgTz2JfoZcwnNCfe824Uz1vWqr9z2P-fjBRsRNo9pXtey6XesRCH3SrIOIasw==")
