@@ -12,6 +12,7 @@ INFLUX_URL = os.getenv("INFLUX_URL", "http://10.42.0.1:8086")
 INFLUX_TOKEN = os.getenv("INFLUX_TOKEN", "rY1fmYQWDkTofiYVpqCu21jkgAgTz2JfoZcwnNCfe824Uz1vWqr9z2P-fjBRsRNo9pXtey6XesRCH3SrIOIasw==")
 INFLUX_ORG = os.getenv("INFLUX_ORG", "fieldshift")
 INFLUX_BUCKET = os.getenv("INFLUX_BUCKET", "c001_campo")
+INFLUX_BUCKET_ESTADO = os.getenv("INFLUX_BUCKET_ESTADO", "c001_estado")
 
 # Cliente al que se asignan las balizas creadas por POST /balizas (demo).
 DEMO_CLIENTE_ID = os.getenv("DEMO_CLIENTE_ID", "c001")
